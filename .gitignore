@@ -1,0 +1,15 @@
+.superpowers/
+__pycache__/
+.venv/
+venv/
+data/cache/
+data/raw/
+data/processed/
+outputs/
+*.pyc
+*.log
+*.db
+*.sqlite
+*.parquet
+*.env
+
