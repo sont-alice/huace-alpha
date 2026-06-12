@@ -111,6 +111,7 @@ class DataRequest:
     use_finance: bool = True
     force_sample: bool = False
     force_refresh: bool = False
+    extra_symbols: tuple[str, ...] = ()
 
 
 class SampleProvider:
@@ -139,7 +140,7 @@ class AkshareProvider:
         import akshare as ak
 
         universe = _akshare_universe(ak)
-        symbols = universe["code"].head(request.max_symbols).tolist()
+        symbols = _merge_symbols(universe["code"].head(request.max_symbols).tolist(), request.extra_symbols)
         if not symbols:
             symbols = CORE_A_SHARE_POOL[: request.max_symbols]
 
@@ -200,7 +201,7 @@ class TushareProvider:
         ts.set_token(self.token)
         pro = ts.pro_api(self.token)
         universe = _tushare_universe(pro)
-        symbols = universe["ts_code"].head(request.max_symbols).tolist()
+        symbols = [_suffix_code(symbol) for symbol in _merge_symbols(universe["ts_code"].head(request.max_symbols).tolist(), request.extra_symbols)]
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
 
@@ -272,7 +273,8 @@ class ProviderRouter:
 
 
 def _cache_path(cache_dir: Path, provider: str, request: DataRequest) -> Path:
-    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{date.today():%Y%m%d}"
+    extras = ",".join(sorted(_plain_symbol(symbol) for symbol in request.extra_symbols))
+    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{extras}-{date.today():%Y%m%d}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return cache_dir / f"{provider}_{digest}.parquet"
 
@@ -470,3 +472,20 @@ def _suffix_code(symbol: str) -> str:
     if symbol.startswith(("6", "9", "688")):
         return f"{symbol}.SH"
     return f"{symbol}.SZ"
+
+
+def _plain_symbol(symbol: str) -> str:
+    text = str(symbol).strip().upper()
+    if "." in text:
+        text = text.split(".")[0]
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits.zfill(6) if digits else ""
+
+
+def _merge_symbols(base: list[str], extra: tuple[str, ...]) -> list[str]:
+    merged: list[str] = []
+    for symbol in [*base, *extra]:
+        plain = _plain_symbol(symbol)
+        if plain and plain not in merged:
+            merged.append(plain)
+    return merged

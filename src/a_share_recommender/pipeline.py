@@ -21,6 +21,8 @@ class PipelineResult:
     gate_reasons: list[str]
     equity_curve: pd.DataFrame
     recommendations: pd.DataFrame
+    market: pd.DataFrame
+    latest_scored: pd.DataFrame
     data_date: pd.Timestamp
     availability: dict[str, str]
 
@@ -50,6 +52,8 @@ def run_pipeline(
         gate_reasons=gate_reasons,
         equity_curve=curve,
         recommendations=recommendations,
+        market=market,
+        latest_scored=latest_scored,
         data_date=pd.Timestamp(market["date"].max()),
         availability=router.availability(),
     )

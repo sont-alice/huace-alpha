@@ -1,5 +1,6 @@
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
 from a_share_recommender.data_providers import DataRequest
+from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
 from a_share_recommender.features import build_feature_frame
 from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
@@ -30,3 +31,26 @@ def test_pipeline_returns_recommendations_and_metrics():
     assert result.metrics["periods"] > 0
     assert len(result.recommendations) <= 5
     assert {"code", "score", "risk_tags", "reason"}.issubset(result.recommendations.columns)
+
+
+def test_stock_code_normalization():
+    assert normalize_stock_code("000001") == "000001.SZ"
+    assert normalize_stock_code("600519") == "600519.SH"
+    assert normalize_stock_code("300750.SZ") == "300750.SZ"
+
+
+def test_stock_evaluation_for_existing_sample_stock():
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+    evaluation = evaluate_stock("600000", result.market, result.latest_scored, config, result.gate_ok)
+    assert evaluation.found
+    assert evaluation.summary["代码"] == "600000.SH"
+    assert evaluation.conclusion in {"买入观察", "仅观察", "不建议介入"}
+    assert not evaluation.price_history.empty
+
+
+def test_stock_evaluation_for_missing_code():
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+    evaluation = evaluate_stock("999999", result.market, result.latest_scored, config, result.gate_ok)
+    assert not evaluation.found

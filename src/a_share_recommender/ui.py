@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from .config import StrategyConfig
 from .data_providers import DataRequest
+from .evaluator import evaluate_stock, normalize_stock_code
 from .pipeline import run_pipeline
 
 
@@ -19,6 +21,12 @@ def render_app() -> None:
         top_n = st.slider("推荐数量上限", 3, 20, 10)
         min_amount = st.number_input("20日平均成交额下限（万元）", 1000, 100000, 8000, 1000) * 10000
         transaction_cost = st.number_input("单轮交易成本", 0.0, 0.02, 0.003, 0.001, format="%.3f")
+
+        st.header("个股评估")
+        evaluation_code = st.text_input("股票代码", value="", placeholder="例如 000001 或 600519")
+        normalized_evaluation_code = normalize_stock_code(evaluation_code)
+        if evaluation_code and normalized_evaluation_code:
+            st.caption(f"将评估：{normalized_evaluation_code}")
 
         st.header("数据设置")
         force_sample = st.checkbox("演示模式（不拉真实行情）", value=False)
@@ -36,12 +44,14 @@ def render_app() -> None:
         min_amount=float(min_amount),
         transaction_cost=float(transaction_cost),
     )
+    extra_symbols = (normalized_evaluation_code,) if normalized_evaluation_code and not force_sample else ()
     data_request = DataRequest(
         max_symbols=max_symbols,
         history_years=history_years,
         use_finance=use_finance,
         force_sample=force_sample,
         force_refresh=force_refresh,
+        extra_symbols=extra_symbols,
     )
 
     cache_key = (
@@ -49,6 +59,7 @@ def render_app() -> None:
         top_n,
         min_amount,
         transaction_cost,
+        evaluation_code.strip(),
         prefer_tushare,
         bool(tushare_token),
         max_symbols,
@@ -85,7 +96,7 @@ def render_app() -> None:
     else:
         st.warning("回测门槛未通过：今日清单仅用于观察。原因：" + "；".join(result.gate_reasons))
 
-    tab_rec, tab_bt, tab_data = st.tabs(["今日推荐", "回测证据", "数据源状态"])
+    tab_rec, tab_eval, tab_bt, tab_data = st.tabs(["今日推荐", "个股评估", "回测证据", "数据源状态"])
 
     with tab_rec:
         st.subheader("推荐列表")
@@ -106,6 +117,9 @@ def render_app() -> None:
             file_name="a_share_recommendations.csv",
             mime="text/csv",
         )
+
+    with tab_eval:
+        _render_stock_evaluation(evaluation_code, result, config)
 
     with tab_bt:
         st.subheader("样本外资金曲线")
@@ -134,3 +148,61 @@ def render_app() -> None:
                 "测试开始": result.model_result.test_start.strftime("%Y-%m-%d"),
             }
         )
+
+
+def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> None:
+    st.subheader("个股评估")
+    if not raw_code.strip():
+        st.write("在左侧输入股票代码后，这里会显示模型评分、技术面、基本面、风险标签和近一年走势。")
+        return
+
+    evaluation = evaluate_stock(raw_code, result.market, result.latest_scored, config, result.gate_ok)
+    if not evaluation.found:
+        st.error(evaluation.explanation)
+        return
+
+    summary = evaluation.summary
+    cols = st.columns(5)
+    cols[0].metric("结论", evaluation.conclusion)
+    cols[1].metric("股票", f"{summary['名称']} {summary['代码']}")
+    cols[2].metric("模型分位", f"{summary['股票池分位']:.1%}")
+    cols[3].metric("收盘价", f"{summary['最新收盘价']:.2f}")
+    cols[4].metric("行业", str(summary["行业"]))
+
+    if evaluation.conclusion == "买入观察":
+        st.success(evaluation.explanation)
+    elif evaluation.conclusion == "仅观察":
+        st.warning(evaluation.explanation)
+    else:
+        st.error(evaluation.explanation)
+
+    signal_frame = _signals_to_frame(evaluation.signals)
+    st.dataframe(signal_frame, use_container_width=True, hide_index=True)
+
+    if evaluation.risks:
+        st.write("风险标签：" + "；".join(evaluation.risks))
+    else:
+        st.write("风险标签：常规")
+
+    price = evaluation.price_history[["date", "close", "ma20", "ma60"]].copy()
+    price = price.rename(columns={"close": "收盘价", "ma20": "20日均线", "ma60": "60日均线"})
+    fig = px.line(price, x="date", y=["收盘价", "20日均线", "60日均线"], labels={"value": "价格", "variable": "序列"})
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _signals_to_frame(signals: dict[str, float]) -> pd.DataFrame:
+    percent_keys = {"20日收益", "60日收益", "120日收益", "20日均线偏离", "60日均线偏离", "20日波动", "ROE", "净利润增长率", "行业20日强度"}
+    rows = []
+    for key, value in signals.items():
+        if pd.isna(value):
+            display = "缺失"
+        elif key in percent_keys:
+            display = f"{value:.2%}"
+        elif key == "20日平均成交额":
+            display = f"{value / 10000:.0f} 万元"
+        elif key == "PE TTM":
+            display = f"{value:.2f}"
+        else:
+            display = f"{value:.4f}"
+        rows.append({"指标": key, "数值": display})
+    return pd.DataFrame(rows)
