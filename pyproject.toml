@@ -1,0 +1,27 @@
+[project]
+name = "a-share-wave-recommender"
+version = "0.1.0"
+description = "Local A-share wave backtesting and recommendation web app."
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "plotly",
+  "pyarrow",
+  "scikit-learn",
+  "streamlit",
+]
+
+[project.optional-dependencies]
+data = [
+  "akshare",
+  "tushare",
+]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
