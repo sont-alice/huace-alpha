@@ -25,6 +25,7 @@ def make_recommendations(latest_scored: pd.DataFrame, config: StrategyConfig, al
             "code",
             "name",
             "industry",
+            "board",
             "action",
             "score",
             "score_rank",
@@ -62,4 +63,3 @@ def _reason(row: pd.Series) -> str:
     if row["roe"] > 0.1:
         reasons.append("ROE较好")
     return "；".join(reasons[:3]) if reasons else "模型综合评分靠前"
-

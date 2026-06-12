@@ -54,6 +54,7 @@ def make_sample_market(n_stocks: int = 90, n_days: int = 900, seed: int = 42) ->
                     "code": code,
                     "name": f"样例{i + 1:03d}",
                     "industry": industry,
+                    "board": _sample_board(code),
                     "open": open_,
                     "high": high,
                     "low": low,
@@ -75,3 +76,13 @@ def make_sample_market(n_stocks: int = 90, n_days: int = 900, seed: int = 42) ->
 
     data = pd.concat(rows, ignore_index=True)
     return data.sort_values(["date", "code"]).reset_index(drop=True)
+
+
+def _sample_board(code: str) -> str:
+    if code.startswith("688"):
+        return "科创板"
+    if code.startswith("300"):
+        return "创业板"
+    if code.endswith(".SH"):
+        return "上证主板"
+    return "深证主板"

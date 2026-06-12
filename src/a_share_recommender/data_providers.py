@@ -112,6 +112,7 @@ class DataRequest:
     force_sample: bool = False
     force_refresh: bool = False
     extra_symbols: tuple[str, ...] = ()
+    boards: tuple[str, ...] = ("上证主板", "深证主板", "创业板", "科创板")
 
 
 class SampleProvider:
@@ -139,7 +140,8 @@ class AkshareProvider:
 
         import akshare as ak
 
-        universe = _akshare_universe(ak)
+        full_universe = _akshare_universe(ak, self.cache_dir, request.force_refresh)
+        universe = _filter_boards(full_universe, request.boards)
         symbols = _merge_symbols(universe["code"].head(request.max_symbols).tolist(), request.extra_symbols)
         if not symbols:
             symbols = CORE_A_SHARE_POOL[: request.max_symbols]
@@ -160,7 +162,7 @@ class AkshareProvider:
                 )
                 if raw.empty:
                     continue
-                meta = universe.loc[universe["code"] == symbol].head(1)
+                meta = full_universe.loc[full_universe["code"] == symbol].head(1)
                 frames.append(_normalize_akshare_hist(raw, meta))
                 time.sleep(0.08)
             except Exception as exc:
@@ -200,7 +202,8 @@ class TushareProvider:
 
         ts.set_token(self.token)
         pro = ts.pro_api(self.token)
-        universe = _tushare_universe(pro)
+        full_universe = _tushare_universe(pro)
+        universe = _filter_boards(full_universe, request.boards)
         symbols = [_suffix_code(symbol) for symbol in _merge_symbols(universe["ts_code"].head(request.max_symbols).tolist(), request.extra_symbols)]
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
@@ -212,7 +215,7 @@ class TushareProvider:
                 raw = ts.pro_bar(ts_code=ts_code, adj="qfq", start_date=start_date, end_date=end_date)
                 if raw is None or raw.empty:
                     continue
-                meta = universe.loc[universe["ts_code"] == ts_code].head(1)
+                meta = full_universe.loc[full_universe["ts_code"] == ts_code].head(1)
                 daily_basic = _safe_tushare_daily_basic(pro, ts_code, start_date, end_date)
                 fina = _safe_tushare_fina_indicator(pro, ts_code) if request.use_finance else pd.DataFrame()
                 frames.append(_normalize_tushare_hist(raw, meta, daily_basic, fina))
@@ -274,12 +277,17 @@ class ProviderRouter:
 
 def _cache_path(cache_dir: Path, provider: str, request: DataRequest) -> Path:
     extras = ",".join(sorted(_plain_symbol(symbol) for symbol in request.extra_symbols))
-    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{extras}-{date.today():%Y%m%d}"
+    boards = ",".join(request.boards)
+    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{extras}-{boards}-{date.today():%Y%m%d}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return cache_dir / f"{provider}_{digest}.parquet"
 
 
-def _akshare_universe(ak) -> pd.DataFrame:
+def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
+    cache_path = cache_dir / "akshare_universe.parquet"
+    if cache_path.exists() and not force_refresh:
+        return pd.read_parquet(cache_path)
+
     rows = []
     try:
         sh = ak.stock_info_sh_name_code()
@@ -288,7 +296,8 @@ def _akshare_universe(ak) -> pd.DataFrame:
                 {
                     "code": sh["证券代码"].astype(str).str.zfill(6),
                     "name": sh["证券简称"].astype(str),
-                    "industry": "沪市",
+                    "industry": "未知",
+                    "board": sh["证券代码"].astype(str).str.zfill(6).map(_board_from_symbol),
                     "listing_date": pd.to_datetime(sh["上市日期"], errors="coerce"),
                 }
             )
@@ -303,8 +312,25 @@ def _akshare_universe(ak) -> pd.DataFrame:
                 {
                     "code": sz["A股代码"].astype(str).str.zfill(6),
                     "name": sz["A股简称"].astype(str),
-                    "industry": sz.get("所属行业", "深市").astype(str),
+                    "industry": sz.get("所属行业", "未知").astype(str),
+                    "board": sz.get("板块", "").astype(str).map(_normalize_sz_board),
                     "listing_date": pd.to_datetime(sz["A股上市日期"], errors="coerce"),
+                }
+            )
+        )
+    except Exception:
+        pass
+
+    try:
+        bj = ak.stock_info_bj_name_code()
+        rows.append(
+            pd.DataFrame(
+                {
+                    "code": bj["证券代码"].astype(str).str.zfill(6),
+                    "name": bj["证券简称"].astype(str),
+                    "industry": "未知",
+                    "board": "北交所",
+                    "listing_date": pd.to_datetime(bj["上市日期"], errors="coerce"),
                 }
             )
         )
@@ -313,16 +339,21 @@ def _akshare_universe(ak) -> pd.DataFrame:
 
     if rows:
         universe = pd.concat(rows, ignore_index=True)
-        universe = universe[universe["code"].isin(CORE_A_SHARE_POOL)].drop_duplicates("code")
+        universe = universe.drop_duplicates("code")
         core_rank = {code: i for i, code in enumerate(CORE_A_SHARE_POOL)}
         universe["rank"] = universe["code"].map(core_rank)
-        return universe.sort_values("rank").drop(columns=["rank"]).reset_index(drop=True)
+        universe["rank"] = universe["rank"].fillna(len(core_rank) + universe.index.to_series())
+        universe = universe.sort_values("rank").drop(columns=["rank"]).reset_index(drop=True)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        universe.to_parquet(cache_path, index=False)
+        return universe
 
     return pd.DataFrame(
         {
             "code": CORE_A_SHARE_POOL,
             "name": CORE_A_SHARE_POOL,
             "industry": "未知",
+            "board": [_board_from_symbol(code) for code in CORE_A_SHARE_POOL],
             "listing_date": pd.NaT,
         }
     )
@@ -341,6 +372,7 @@ def _normalize_akshare_hist(raw: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFra
             "code": _suffix_code(symbol),
             "name": meta_row.get("name", symbol),
             "industry": meta_row.get("industry", "未知"),
+            "board": meta_row.get("board", _board_from_symbol(symbol)),
             "open": pd.to_numeric(raw["开盘"], errors="coerce"),
             "high": pd.to_numeric(raw["最高"], errors="coerce"),
             "low": pd.to_numeric(raw["最低"], errors="coerce"),
@@ -384,10 +416,11 @@ def _attach_akshare_finance(ak, data: pd.DataFrame, symbols: list[str]) -> pd.Da
 def _tushare_universe(pro) -> pd.DataFrame:
     fields = "ts_code,symbol,name,industry,list_date"
     universe = pro.stock_basic(exchange="", list_status="L", fields=fields)
-    core_ts = {_suffix_code(code).replace(".SH", ".SH").replace(".SZ", ".SZ") for code in CORE_A_SHARE_POOL}
-    universe = universe[universe["ts_code"].isin(core_ts)].copy()
+    universe = universe.copy()
+    universe["board"] = universe["ts_code"].map(_board_from_symbol)
     core_rank = {_suffix_code(code): i for i, code in enumerate(CORE_A_SHARE_POOL)}
     universe["rank"] = universe["ts_code"].map(core_rank)
+    universe["rank"] = universe["rank"].fillna(len(core_rank) + universe.index.to_series())
     return universe.sort_values("rank").drop(columns=["rank"]).reset_index(drop=True)
 
 
@@ -424,6 +457,7 @@ def _normalize_tushare_hist(
             "code": df["ts_code"],
             "name": meta_row.get("name", df["ts_code"].iloc[0]),
             "industry": meta_row.get("industry", "未知"),
+            "board": meta_row.get("board", _board_from_symbol(df["ts_code"].iloc[0])),
             "open": pd.to_numeric(df["open"], errors="coerce"),
             "high": pd.to_numeric(df["high"], errors="coerce"),
             "low": pd.to_numeric(df["low"], errors="coerce"),
@@ -472,6 +506,35 @@ def _suffix_code(symbol: str) -> str:
     if symbol.startswith(("6", "9", "688")):
         return f"{symbol}.SH"
     return f"{symbol}.SZ"
+
+
+def _board_from_symbol(symbol: str) -> str:
+    plain = _plain_symbol(symbol)
+    if plain.startswith("688"):
+        return "科创板"
+    if plain.startswith(("600", "601", "603", "605")):
+        return "上证主板"
+    if plain.startswith("300"):
+        return "创业板"
+    if plain.startswith(("000", "001", "002", "003")):
+        return "深证主板"
+    return "未知"
+
+
+def _normalize_sz_board(board: str) -> str:
+    text = str(board).strip()
+    if "创业" in text:
+        return "创业板"
+    if "主板" in text or text in {"中小板", "中小企业板"}:
+        return "深证主板"
+    return text or "深证主板"
+
+
+def _filter_boards(universe: pd.DataFrame, boards: tuple[str, ...]) -> pd.DataFrame:
+    if not boards or "全市场" in boards or "board" not in universe.columns:
+        return universe
+    filtered = universe[universe["board"].isin(boards)].copy()
+    return filtered if not filtered.empty else universe
 
 
 def _plain_symbol(symbol: str) -> str:

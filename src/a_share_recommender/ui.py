@@ -10,6 +10,9 @@ from .evaluator import evaluate_stock, normalize_stock_code
 from .pipeline import run_pipeline
 
 
+BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
+
+
 def render_app() -> None:
     st.set_page_config(page_title="A股波段推荐", layout="wide")
     st.title("A股波段预测推荐")
@@ -32,6 +35,7 @@ def render_app() -> None:
         force_sample = st.checkbox("演示模式（不拉真实行情）", value=False)
         prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False, disabled=force_sample)
         tushare_token = st.text_input("Tushare token", type="password", disabled=force_sample)
+        boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS, disabled=force_sample)
         max_symbols = st.slider("真实数据股票数量", 5, 80, 30, 5, disabled=force_sample)
         history_years = st.slider("历史数据年限", 2, 6, 4, 1, disabled=force_sample)
         use_finance = st.checkbox("启用财务增强（较慢）", value=True, disabled=force_sample)
@@ -52,6 +56,7 @@ def render_app() -> None:
         force_sample=force_sample,
         force_refresh=force_refresh,
         extra_symbols=extra_symbols,
+        boards=tuple(boards or BOARD_OPTIONS),
     )
 
     cache_key = (
@@ -62,6 +67,7 @@ def render_app() -> None:
         evaluation_code.strip(),
         prefer_tushare,
         bool(tushare_token),
+        tuple(boards or BOARD_OPTIONS),
         max_symbols,
         history_years,
         use_finance,
@@ -105,6 +111,7 @@ def render_app() -> None:
             use_container_width=True,
             column_config={
                 "score": st.column_config.NumberColumn("模型分", format="%.4f"),
+                "board": st.column_config.TextColumn("市场板块"),
                 "score_rank": st.column_config.ProgressColumn("分位", min_value=0, max_value=1),
                 "close": st.column_config.NumberColumn("收盘价", format="%.2f"),
                 "position_limit": st.column_config.NumberColumn("仓位上限", format="%.1%"),
@@ -162,12 +169,13 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
         return
 
     summary = evaluation.summary
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].metric("结论", evaluation.conclusion)
     cols[1].metric("股票", f"{summary['名称']} {summary['代码']}")
     cols[2].metric("模型分位", f"{summary['股票池分位']:.1%}")
     cols[3].metric("收盘价", f"{summary['最新收盘价']:.2f}")
-    cols[4].metric("行业", str(summary["行业"]))
+    cols[4].metric("市场板块", str(summary["市场板块"]))
+    cols[5].metric("行业", str(summary["行业"]))
 
     if evaluation.conclusion == "买入观察":
         st.success(evaluation.explanation)

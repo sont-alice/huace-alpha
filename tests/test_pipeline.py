@@ -30,7 +30,7 @@ def test_pipeline_returns_recommendations_and_metrics():
     )
     assert result.metrics["periods"] > 0
     assert len(result.recommendations) <= 5
-    assert {"code", "score", "risk_tags", "reason"}.issubset(result.recommendations.columns)
+    assert {"code", "board", "score", "risk_tags", "reason"}.issubset(result.recommendations.columns)
 
 
 def test_stock_code_normalization():
@@ -45,6 +45,7 @@ def test_stock_evaluation_for_existing_sample_stock():
     evaluation = evaluate_stock("600000", result.market, result.latest_scored, config, result.gate_ok)
     assert evaluation.found
     assert evaluation.summary["代码"] == "600000.SH"
+    assert evaluation.summary["市场板块"] == "上证主板"
     assert evaluation.conclusion in {"买入观察", "仅观察", "不建议介入"}
     assert not evaluation.price_history.empty
 

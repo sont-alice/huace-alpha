@@ -64,6 +64,7 @@ def evaluate_stock(
         "代码": code,
         "名称": row["name"],
         "行业": row["industry"],
+        "市场板块": row.get("board", "未知"),
         "最新收盘价": float(row["close"]),
         "模型分": float(row["score"]),
         "股票池分位": float(row["score_rank"]),
