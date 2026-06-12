@@ -4,6 +4,7 @@ import plotly.express as px
 import streamlit as st
 
 from .config import StrategyConfig
+from .data_providers import DataRequest
 from .pipeline import run_pipeline
 
 
@@ -18,8 +19,15 @@ def render_app() -> None:
         top_n = st.slider("推荐数量上限", 3, 20, 10)
         min_amount = st.number_input("20日平均成交额下限（万元）", 1000, 100000, 8000, 1000) * 10000
         transaction_cost = st.number_input("单轮交易成本", 0.0, 0.02, 0.003, 0.001, format="%.3f")
-        prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
-        tushare_token = st.text_input("Tushare token", type="password")
+
+        st.header("数据设置")
+        force_sample = st.checkbox("演示模式（不拉真实行情）", value=False)
+        prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False, disabled=force_sample)
+        tushare_token = st.text_input("Tushare token", type="password", disabled=force_sample)
+        max_symbols = st.slider("真实数据股票数量", 5, 80, 30, 5, disabled=force_sample)
+        history_years = st.slider("历史数据年限", 2, 6, 4, 1, disabled=force_sample)
+        use_finance = st.checkbox("启用财务增强（较慢）", value=True, disabled=force_sample)
+        force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False, disabled=force_sample)
         run = st.button("生成今日推荐", type="primary")
 
     config = StrategyConfig(
@@ -28,13 +36,38 @@ def render_app() -> None:
         min_amount=float(min_amount),
         transaction_cost=float(transaction_cost),
     )
+    data_request = DataRequest(
+        max_symbols=max_symbols,
+        history_years=history_years,
+        use_finance=use_finance,
+        force_sample=force_sample,
+        force_refresh=force_refresh,
+    )
+
+    cache_key = (
+        horizon,
+        top_n,
+        min_amount,
+        transaction_cost,
+        prefer_tushare,
+        bool(tushare_token),
+        max_symbols,
+        history_years,
+        use_finance,
+        force_sample,
+        force_refresh,
+    )
+    if st.session_state.get("cache_key") != cache_key:
+        st.session_state.pop("result", None)
+        st.session_state["cache_key"] = cache_key
 
     if "result" not in st.session_state or run:
-        with st.spinner("正在更新数据、训练模型并回测..."):
+        with st.spinner("正在更新数据、训练模型并回测。真实数据首次拉取可能需要数分钟..."):
             st.session_state["result"] = run_pipeline(
                 config,
                 prefer_tushare=prefer_tushare,
                 tushare_token=tushare_token or None,
+                data_request=data_request,
             )
 
     result = st.session_state["result"]
@@ -93,10 +126,11 @@ def render_app() -> None:
         st.table(result.availability)
         st.write(
             {
+                "数据模式": result.provider_status.mode,
+                "数据行数": result.provider_status.rows,
                 "训练行数": result.model_result.train_rows,
                 "测试行数": result.model_result.test_rows,
                 "训练截止": result.model_result.train_end.strftime("%Y-%m-%d"),
                 "测试开始": result.model_result.test_start.strftime("%Y-%m-%d"),
             }
         )
-

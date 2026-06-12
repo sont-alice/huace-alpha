@@ -6,7 +6,7 @@ import pandas as pd
 
 from .backtest import gate_passed, run_backtest
 from .config import StrategyConfig
-from .data_providers import ProviderRouter, ProviderStatus
+from .data_providers import DataRequest, ProviderRouter, ProviderStatus
 from .features import build_feature_frame, latest_features
 from .modeling import ModelResult, score_frame, train_model
 from .recommend import make_recommendations
@@ -25,9 +25,14 @@ class PipelineResult:
     availability: dict[str, str]
 
 
-def run_pipeline(config: StrategyConfig, prefer_tushare: bool = False, tushare_token: str | None = None) -> PipelineResult:
+def run_pipeline(
+    config: StrategyConfig,
+    prefer_tushare: bool = False,
+    tushare_token: str | None = None,
+    data_request: DataRequest | None = None,
+) -> PipelineResult:
     router = ProviderRouter(prefer_tushare=prefer_tushare, tushare_token=tushare_token)
-    market, status = router.load_market()
+    market, status = router.load_market(data_request or DataRequest())
     features = build_feature_frame(market, horizon_days=config.horizon_days)
     model_result = train_model(features)
     scored = score_frame(model_result.model, features.dropna(subset=["excess_return"]).copy())
@@ -48,4 +53,3 @@ def run_pipeline(config: StrategyConfig, prefer_tushare: bool = False, tushare_t
         data_date=pd.Timestamp(market["date"].max()),
         availability=router.availability(),
     )
-

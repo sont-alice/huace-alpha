@@ -10,13 +10,11 @@ dependencies = [
   "pyarrow",
   "scikit-learn",
   "streamlit",
-]
-
-[project.optional-dependencies]
-data = [
   "akshare",
   "tushare",
 ]
+
+[project.optional-dependencies]
 dev = [
   "pytest",
 ]
@@ -24,4 +22,3 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-

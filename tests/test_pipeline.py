@@ -1,4 +1,5 @@
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
+from a_share_recommender.data_providers import DataRequest
 from a_share_recommender.features import build_feature_frame
 from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
@@ -22,7 +23,10 @@ def test_future_return_uses_same_stock_future_close():
 
 
 def test_pipeline_returns_recommendations_and_metrics():
-    result = run_pipeline(StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000))
+    result = run_pipeline(
+        StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000),
+        data_request=DataRequest(force_sample=True),
+    )
     assert result.metrics["periods"] > 0
     assert len(result.recommendations) <= 5
     assert {"code", "score", "risk_tags", "reason"}.issubset(result.recommendations.columns)
