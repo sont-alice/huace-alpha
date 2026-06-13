@@ -181,7 +181,8 @@ class AkshareProvider:
         cache_path = _cache_path(self.cache_dir, "akshare", request)
         if cache_path.exists() and not request.force_refresh:
             data = pd.read_parquet(cache_path)
-            return data, ProviderStatus("akshare-cache", f"使用 AKShare 本地缓存：{cache_path}", len(data))
+            if _cache_satisfies_request(data, request):
+                return data, ProviderStatus("akshare-cache", f"使用 AKShare 本地缓存：{cache_path}", len(data))
 
         if not find_spec("akshare"):
             raise RuntimeError("未安装 akshare，请先运行 python -m pip install akshare")
@@ -212,7 +213,7 @@ class AkshareProvider:
                 errors.append(f"{symbol}:{type(exc).__name__}")
 
         if not frames:
-            stale = _load_latest_provider_cache(self.cache_dir, "akshare")
+            stale = _load_latest_provider_cache(self.cache_dir, "akshare", request)
             if stale is not None:
                 message = "AKShare 当前连接失败，已使用最近一次真实数据缓存；失败样本：" + "；".join(errors[:5])
                 return stale, ProviderStatus("akshare-stale-cache", message, len(stale))
@@ -240,7 +241,8 @@ class TushareProvider:
         cache_path = _cache_path(self.cache_dir, "tushare", request)
         if cache_path.exists() and not request.force_refresh:
             data = pd.read_parquet(cache_path)
-            return data, ProviderStatus("tushare-cache", f"使用 Tushare 本地缓存：{cache_path}", len(data))
+            if _cache_satisfies_request(data, request):
+                return data, ProviderStatus("tushare-cache", f"使用 Tushare 本地缓存：{cache_path}", len(data))
 
         if not find_spec("tushare"):
             raise RuntimeError("未安装 tushare，请先运行 python -m pip install tushare")
@@ -354,7 +356,7 @@ def _load_akshare_hist_with_retry(ak, symbol: str, start_date: str, end_date: st
     return pd.DataFrame()
 
 
-def _load_latest_provider_cache(cache_dir: Path, provider: str) -> pd.DataFrame | None:
+def _load_latest_provider_cache(cache_dir: Path, provider: str, request: DataRequest | None = None) -> pd.DataFrame | None:
     if not cache_dir.exists():
         return None
     candidates = sorted(
@@ -362,15 +364,55 @@ def _load_latest_provider_cache(cache_dir: Path, provider: str) -> pd.DataFrame 
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
+    frames: list[pd.DataFrame] = []
     for path in candidates:
         try:
             data = pd.read_parquet(path)
             required = {"date", "code", "close", "name"}
             if not data.empty and required.issubset(data.columns):
-                return data
+                frames.append(data)
         except Exception:
             continue
-    return None
+    if not frames:
+        return None
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.sort_values("date", ascending=False).drop_duplicates(["date", "code"], keep="first")
+    if request is None or "board" not in merged.columns:
+        return merged.sort_values(["date", "code"]).reset_index(drop=True)
+
+    filtered = merged[merged["board"].isin(request.boards)].copy()
+    if filtered.empty:
+        return None
+
+    latest_by_code = filtered.sort_values("date").groupby("code").tail(1)
+    selected_plain = _merge_symbols(
+        _select_symbols_by_board(
+            latest_by_code.assign(code=latest_by_code["code"].map(_plain_symbol)),
+            request.max_symbols,
+            request.boards,
+        ),
+        request.extra_symbols,
+    )
+    selected_codes = {_suffix_code(symbol) for symbol in selected_plain}
+    selected = filtered[filtered["code"].isin(selected_codes)].copy()
+    if selected["code"].nunique() < max(3, min(request.max_symbols, 8)):
+        return None
+    return selected.sort_values(["date", "code"]).reset_index(drop=True)
+
+
+def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
+    if data.empty or "code" not in data.columns:
+        return False
+    min_symbols = max(3, min(request.max_symbols, 8))
+    if data["code"].nunique() < min_symbols:
+        return False
+    if "board" in data.columns:
+        requested_boards = {board for board in request.boards if board != "全市场"}
+        available_requested = set(data["board"].dropna().astype(str)) & requested_boards
+        if len(requested_boards) >= 2 and request.max_symbols >= 8 and len(available_requested) < 2:
+            return False
+    return True
 
 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:

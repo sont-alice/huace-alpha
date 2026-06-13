@@ -1,11 +1,12 @@
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
-from a_share_recommender.data_providers import DataRequest
+from a_share_recommender.data_providers import DataRequest, _cache_satisfies_request, _load_latest_provider_cache
 from a_share_recommender.data_providers import _core_fallback_universe, _filter_boards, _select_symbols_by_board
 from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
 from a_share_recommender.features import build_feature_frame
 from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
 from a_share_recommender.backtest import _cap_industry
+from a_share_recommender.recommend import _cap_board
 
 
 def test_feature_frame_has_expected_columns():
@@ -76,3 +77,30 @@ def test_symbol_selection_balances_selected_boards():
     assert selected_boards["深证主板"] > 0
     assert selected_boards["创业板"] > 0
     assert selected_boards["科创板"] > 0
+
+
+def test_board_cap_limits_single_board_concentration():
+    frame = make_sample_market(n_stocks=18, n_days=40).groupby("code").tail(1).copy()
+    frame["board"] = ["上证主板"] * 12 + ["深证主板"] * 3 + ["创业板"] * 3
+    config = StrategyConfig(top_n=10)
+    selected = _cap_board(frame, config).head(10)
+    assert len(selected) == 10
+    assert selected["board"].value_counts()["上证主板"] <= 5
+
+
+def test_stale_cache_merges_multiple_board_files(tmp_path):
+    base = make_sample_market(n_stocks=12, n_days=40)
+    boards = ["上证主板", "深证主板", "创业板"]
+    for idx, board in enumerate(boards):
+        part = base[base["board"] == board].copy()
+        part.to_parquet(tmp_path / f"akshare_{idx}.parquet", index=False)
+    request = DataRequest(max_symbols=9)
+    merged = _load_latest_provider_cache(tmp_path, "akshare", request)
+    assert merged is not None
+    assert merged["board"].nunique() >= 2
+
+
+def test_narrow_cache_does_not_satisfy_multi_board_request():
+    data = make_sample_market(n_stocks=3, n_days=40)
+    data["board"] = "深证主板"
+    assert not _cache_satisfies_request(data, DataRequest(max_symbols=30))

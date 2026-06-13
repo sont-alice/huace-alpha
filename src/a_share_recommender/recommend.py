@@ -10,6 +10,7 @@ from .config import StrategyConfig
 def make_recommendations(latest_scored: pd.DataFrame, config: StrategyConfig, allow_buy: bool) -> pd.DataFrame:
     sort_column = "composite_score" if "composite_score" in latest_scored.columns else "score"
     candidates = _tradable(latest_scored, config).sort_values(sort_column, ascending=False)
+    candidates = _cap_board(candidates.head(config.top_n * 10), config)
     candidates = _cap_industry(candidates.head(config.top_n * 8), config).head(config.top_n).copy()
     if candidates.empty:
         return candidates
@@ -104,3 +105,26 @@ def _candidate_ratings(candidates: pd.DataFrame) -> pd.Series:
         else:
             labels.append("观察")
     return pd.Series(labels, index=candidates.index)
+
+
+def _cap_board(frame: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
+    if "board" not in frame.columns or frame.empty:
+        return frame
+    max_per_board = max(1, int(np.ceil(config.top_n * 0.45)))
+    selected = []
+    board_counts: dict[str, int] = {}
+    for idx, row in frame.iterrows():
+        board = str(row.get("board", "未知"))
+        if board_counts.get(board, 0) >= max_per_board:
+            continue
+        selected.append(idx)
+        board_counts[board] = board_counts.get(board, 0) + 1
+        if len(selected) >= config.top_n:
+            break
+    if len(selected) < min(config.top_n, len(frame)):
+        for idx in frame.index:
+            if idx not in selected:
+                selected.append(idx)
+            if len(selected) >= min(config.top_n, len(frame)):
+                break
+    return frame.loc[selected]
