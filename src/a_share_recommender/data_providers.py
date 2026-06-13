@@ -96,6 +96,51 @@ CORE_A_SHARE_POOL = [
     "688256",
 ]
 
+CORE_A_SHARE_NAMES = {
+    "000001": "平安银行",
+    "000002": "万科A",
+    "000063": "中兴通讯",
+    "000100": "TCL科技",
+    "000333": "美的集团",
+    "000338": "潍柴动力",
+    "000651": "格力电器",
+    "000725": "京东方A",
+    "000858": "五粮液",
+    "000977": "浪潮信息",
+    "002027": "分众传媒",
+    "002049": "紫光国微",
+    "002129": "TCL中环",
+    "002230": "科大讯飞",
+    "002236": "大华股份",
+    "002241": "歌尔股份",
+    "002271": "东方雨虹",
+    "002304": "洋河股份",
+    "002352": "顺丰控股",
+    "002415": "海康威视",
+    "002475": "立讯精密",
+    "002594": "比亚迪",
+    "002714": "牧原股份",
+    "300014": "亿纬锂能",
+    "300015": "爱尔眼科",
+    "300059": "东方财富",
+    "300122": "智飞生物",
+    "300124": "汇川技术",
+    "300274": "阳光电源",
+    "300308": "中际旭创",
+    "300347": "泰格医药",
+    "300408": "三环集团",
+    "300450": "先导智能",
+    "300750": "宁德时代",
+    "300760": "迈瑞医疗",
+    "688008": "澜起科技",
+    "688012": "中微公司",
+    "688036": "传音控股",
+    "688111": "金山办公",
+    "688126": "沪硅产业",
+    "688169": "石头科技",
+    "688256": "寒武纪",
+}
+
 
 @dataclass(frozen=True)
 class ProviderStatus:
@@ -145,7 +190,7 @@ class AkshareProvider:
 
         full_universe = _akshare_universe(ak, self.cache_dir, request.force_refresh)
         universe = _filter_boards(full_universe, request.boards)
-        symbols = _merge_symbols(universe["code"].head(request.max_symbols).tolist(), request.extra_symbols)
+        symbols = _merge_symbols(_select_symbols_by_board(universe, request.max_symbols, request.boards), request.extra_symbols)
         if not symbols:
             symbols = CORE_A_SHARE_POOL[: request.max_symbols]
 
@@ -206,7 +251,10 @@ class TushareProvider:
         pro = ts.pro_api(self.token)
         full_universe = _tushare_universe(pro)
         universe = _filter_boards(full_universe, request.boards)
-        symbols = [_suffix_code(symbol) for symbol in _merge_symbols(universe["ts_code"].head(request.max_symbols).tolist(), request.extra_symbols)]
+        symbols = [
+            _suffix_code(symbol)
+            for symbol in _merge_symbols(_select_symbols_by_board(universe.rename(columns={"ts_code": "code"}), request.max_symbols, request.boards), request.extra_symbols)
+        ]
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
 
@@ -328,7 +376,9 @@ def _load_latest_provider_cache(cache_dir: Path, provider: str) -> pd.DataFrame 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
     cache_path = cache_dir / "akshare_universe.parquet"
     if cache_path.exists() and not force_refresh:
-        return pd.read_parquet(cache_path)
+        cached = pd.read_parquet(cache_path)
+        if _universe_is_usable(cached):
+            return cached
 
     rows = []
     try:
@@ -378,6 +428,8 @@ def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
         )
     except Exception:
         pass
+
+    rows.append(_core_fallback_universe())
 
     if rows:
         universe = pd.concat(rows, ignore_index=True)
@@ -577,6 +629,45 @@ def _filter_boards(universe: pd.DataFrame, boards: tuple[str, ...]) -> pd.DataFr
         return universe
     filtered = universe[universe["board"].isin(boards)].copy()
     return filtered if not filtered.empty else universe
+
+
+def _core_fallback_universe() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "code": CORE_A_SHARE_POOL,
+            "name": [CORE_A_SHARE_NAMES.get(code, code) for code in CORE_A_SHARE_POOL],
+            "industry": "核心池",
+            "board": [_board_from_symbol(code) for code in CORE_A_SHARE_POOL],
+            "listing_date": pd.NaT,
+        }
+    )
+
+
+def _universe_is_usable(universe: pd.DataFrame) -> bool:
+    if universe.empty or "board" not in universe.columns:
+        return False
+    boards = set(universe["board"].dropna().astype(str))
+    return bool({"上证主板", "深证主板"}.issubset(boards) and ({"创业板", "科创板"} & boards))
+
+
+def _select_symbols_by_board(universe: pd.DataFrame, max_symbols: int, boards: tuple[str, ...]) -> list[str]:
+    if universe.empty:
+        return []
+    active_boards = [board for board in boards if board in set(universe["board"].astype(str))]
+    if not active_boards:
+        return universe["code"].head(max_symbols).astype(str).tolist()
+
+    per_board = max(1, int(np.ceil(max_symbols / len(active_boards))))
+    selected: list[str] = []
+    for board in active_boards:
+        selected.extend(universe.loc[universe["board"] == board, "code"].head(per_board).astype(str).tolist())
+    if len(selected) < max_symbols:
+        for code in universe["code"].astype(str):
+            if code not in selected:
+                selected.append(code)
+            if len(selected) >= max_symbols:
+                break
+    return selected[:max_symbols]
 
 
 def _plain_symbol(symbol: str) -> str:

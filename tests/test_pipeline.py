@@ -1,5 +1,6 @@
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
 from a_share_recommender.data_providers import DataRequest
+from a_share_recommender.data_providers import _core_fallback_universe, _filter_boards, _select_symbols_by_board
 from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
 from a_share_recommender.features import build_feature_frame
 from a_share_recommender.pipeline import run_pipeline
@@ -64,3 +65,14 @@ def test_industry_cap_fills_to_top_n_when_candidates_exist():
     config = StrategyConfig(top_n=10, max_industry_weight=0.3)
     selected = _cap_industry(frame, config)
     assert len(selected) == 10
+
+
+def test_symbol_selection_balances_selected_boards():
+    universe = _core_fallback_universe()
+    filtered = _filter_boards(universe, ("上证主板", "深证主板", "创业板", "科创板"))
+    selected = _select_symbols_by_board(filtered, 16, ("上证主板", "深证主板", "创业板", "科创板"))
+    selected_boards = filtered[filtered["code"].isin(selected)]["board"].value_counts().to_dict()
+    assert selected_boards["上证主板"] > 0
+    assert selected_boards["深证主板"] > 0
+    assert selected_boards["创业板"] > 0
+    assert selected_boards["科创板"] > 0
