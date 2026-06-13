@@ -121,12 +121,10 @@ def render_app() -> None:
         return
 
     result = st.session_state["result"]
-    st.markdown(f'<div class="data-banner">{result.provider_status.message}</div>', unsafe_allow_html=True)
-    if result.provider_status.mode == "akshare-stale-cache":
-        st.warning("当前 AKShare 在线接口连接失败，系统使用最近一次真实数据缓存继续运行。请注意数据日期，并在网络恢复后勾选“忽略今日缓存并重新拉取”。")
-
     market_regime = _latest_market_regime(result)
     buy_count = int((result.recommendations["action"] == "买入观察").sum()) if not result.recommendations.empty else 0
+    _render_health_panel(result, market_regime, buy_count)
+
     cols = st.columns(6)
     cols[0].metric("数据日期", result.data_date.strftime("%Y-%m-%d"))
     cols[1].metric("市场状态", _market_label(market_regime), f"{market_regime:.0%}")
@@ -134,11 +132,6 @@ def render_app() -> None:
     cols[3].metric("样本外胜率", f"{result.metrics['sample_win_rate']:.1%}")
     cols[4].metric("最大回撤", f"{result.metrics['max_drawdown']:.1%}")
     cols[5].metric("收益回撤比", f"{result.metrics['return_drawdown_ratio']:.2f}")
-
-    if result.gate_ok:
-        st.success("回测门槛通过：今日推荐允许作为买入观察清单。")
-    else:
-        st.warning("回测门槛未通过：今日清单仅用于观察。原因：" + "；".join(result.gate_reasons))
 
     tab_rec, tab_eval, tab_bt, tab_data = st.tabs(["今日推荐", "个股评估", "回测证据", "数据源状态"])
 
@@ -244,6 +237,49 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
     price = price.rename(columns={"close": "收盘价", "ma20": "20日均线", "ma60": "60日均线"})
     fig = px.line(price, x="date", y=["收盘价", "20日均线", "60日均线"], labels={"value": "价格", "variable": "序列"})
     st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
+    if result.provider_status.mode == "akshare-stale-cache":
+        data_title = "数据状态：使用最近交易日缓存"
+        data_body = f"在线接口暂不可用，系统已使用真实历史缓存继续运行。当前数据日期：{result.data_date:%Y-%m-%d}。如需刷新，稍后勾选“忽略今日缓存并重新拉取”。"
+        data_class = "health-warn"
+    elif "sample" in result.provider_status.mode:
+        data_title = "数据状态：演示数据"
+        data_body = "当前结果来自样例数据，仅用于查看流程和界面，不用于现实判断。"
+        data_class = "health-warn"
+    else:
+        data_title = "数据状态：真实数据在线"
+        data_body = result.provider_status.message
+        data_class = "health-ok"
+
+    if result.gate_ok and buy_count > 0:
+        model_title = "模型状态：允许进攻"
+        model_body = f"回测门槛通过，当前有 {buy_count} 只股票进入买入观察。"
+        model_class = "health-ok"
+    elif result.gate_ok:
+        model_title = "模型状态：通过但无买入"
+        model_body = "回测门槛通过，但当前个股风控或市场状态未触发买入观察。"
+        model_class = "health-warn"
+    else:
+        model_title = "模型状态：防守"
+        model_body = "今日清单仅用于观察。原因：" + "；".join(result.gate_reasons)
+        model_class = "health-bad"
+
+    market_title = "市场状态：" + _market_label(market_regime)
+    market_body = f"市场状态评分 {market_regime:.0%}。低于 45% 时系统倾向防守，只给观察或等回调动作。"
+    market_class = "health-ok" if market_regime >= 0.62 else "health-warn" if market_regime >= 0.45 else "health-bad"
+
+    cards = [
+        (data_class, data_title, data_body),
+        (model_class, model_title, model_body),
+        (market_class, market_title, market_body),
+    ]
+    html = '<div class="health-grid">' + "".join(
+        f'<div class="health-card {klass}"><div class="health-title">{title}</div><div class="health-copy">{body}</div></div>'
+        for klass, title, body in cards
+    ) + "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def _render_landing(evaluation_code: str, force_sample: bool) -> None:
@@ -396,6 +432,33 @@ def _apply_commercial_theme() -> None:
           color: var(--muted);
           font-size: 14px;
           line-height: 1.65;
+        }
+        .health-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 12px;
+          margin: 10px 0 14px 0;
+        }
+        .health-card {
+          border: 1px solid var(--line);
+          background: var(--panel);
+          border-radius: 8px;
+          padding: 14px 16px;
+          min-height: 116px;
+        }
+        .health-ok { border-left: 4px solid var(--green); }
+        .health-warn { border-left: 4px solid var(--gold); }
+        .health-bad { border-left: 4px solid var(--red); }
+        .health-title {
+          font-size: 15px;
+          font-weight: 800;
+          margin-bottom: 8px;
+          color: var(--text);
+        }
+        .health-copy {
+          color: var(--muted);
+          font-size: 13px;
+          line-height: 1.55;
         }
         div[data-testid="stDataFrame"] {
           border: 1px solid var(--line);
