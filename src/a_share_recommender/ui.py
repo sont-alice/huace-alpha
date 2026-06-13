@@ -26,8 +26,8 @@ def render_app() -> None:
         """
         <div class="terminal-hero">
           <div>
-            <div class="eyebrow">A-SHARE WAVE INTELLIGENCE</div>
-            <h1>A股波段决策终端</h1>
+            <div class="eyebrow">A-SHARE ALPHA RESEARCH PLATFORM</div>
+            <h1>华策 Alpha 投研平台</h1>
           </div>
           <div class="risk-note">研究辅助工具 · 不构成投资建议 · 不承诺收益</div>
         </div>
@@ -356,7 +356,7 @@ def _apply_commercial_theme() -> None:
         }
         .terminal-hero h1 {
           margin: 2px 0 0 0;
-          font-size: 28px;
+          font-size: 45px;
           line-height: 1.1;
           letter-spacing: 0;
         }
