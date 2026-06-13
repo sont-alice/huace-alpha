@@ -10,6 +10,7 @@ from .data_providers import DataRequest, ProviderRouter, ProviderStatus
 from .features import build_feature_frame, latest_features
 from .modeling import ModelResult, score_frame, train_model
 from .recommend import make_recommendations
+from .scoring import enrich_scores
 
 
 @dataclass
@@ -37,12 +38,12 @@ def run_pipeline(
     market, status = router.load_market(data_request or DataRequest())
     features = build_feature_frame(market, horizon_days=config.horizon_days)
     model_result = train_model(features)
-    scored = score_frame(model_result.model, features.dropna(subset=["excess_return"]).copy())
+    scored = enrich_scores(score_frame(model_result.model, features.dropna(subset=["excess_return"]).copy()), config)
     curve, metrics = run_backtest(scored, config, model_result.test_start)
     gate_ok, gate_reasons = gate_passed(metrics, config)
 
     latest = latest_features(features)
-    latest_scored = score_frame(model_result.model, latest)
+    latest_scored = enrich_scores(score_frame(model_result.model, latest), config)
     recommendations = make_recommendations(latest_scored, config, gate_ok)
     return PipelineResult(
         provider_status=status,

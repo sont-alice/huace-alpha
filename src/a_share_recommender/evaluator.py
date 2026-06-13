@@ -68,6 +68,9 @@ def evaluate_stock(
         "最新收盘价": float(row["close"]),
         "模型分": float(row["score"]),
         "股票池分位": float(row["score_rank"]),
+        "综合评级": row.get("rating", "C"),
+        "胜率评分": float(row.get("win_probability", 0.5)),
+        "综合评分": float(row.get("composite_score", row.get("score", 0.0))),
         "建议持有期": f"{max(20, config.horizon_days - 5)}-{config.horizon_days + 10}个交易日",
     }
     signals = {
@@ -82,6 +85,11 @@ def evaluate_stock(
         "ROE": _float(row["roe"]),
         "净利润增长率": _float(row["net_profit_growth"]),
         "行业20日强度": _float(row["industry_strength_20"]),
+        "趋势评分": _float(row.get("trend_score", np.nan)),
+        "风险评分": _float(row.get("risk_score", np.nan)),
+        "基本面评分": _float(row.get("fundamental_score", np.nan)),
+        "行业评分": _float(row.get("industry_score", np.nan)),
+        "市场状态评分": _float(row.get("market_regime_score", np.nan)),
     }
     return StockEvaluation(True, code, summary, signals, risks, conclusion, explanation, history.tail(260))
 
@@ -112,17 +120,24 @@ def _risk_list(row: pd.Series) -> list[str]:
 def _conclusion(row: pd.Series, risks: list[str], gate_ok: bool) -> str:
     rank = row.get("score_rank", 0)
     hard_risk = any("ST" in risk or "上市时间" in risk for risk in risks)
-    if hard_risk or rank < 0.35:
+    composite = row.get("composite_score", rank)
+    market = row.get("market_regime_score", 0.5)
+    risk = row.get("risk_score", 0.5)
+    if hard_risk or rank < 0.35 or composite < 0.5:
         return "不建议介入"
-    if gate_ok and rank >= 0.8 and len(risks) <= 2:
+    if gate_ok and composite >= 0.72 and market >= 0.45 and risk >= 0.45 and len(risks) <= 2:
         return "买入观察"
+    if row.get("trend_score", 0) >= 0.7 and risk >= 0.4:
+        return "等回调"
     return "仅观察"
 
 
 def _explanation(row: pd.Series, risks: list[str], gate_ok: bool) -> str:
     parts = []
     rank = row.get("score_rank", 0)
-    parts.append(f"模型分位为 {rank:.1%}")
+    parts.append(f"综合评级 {row.get('rating', 'C')}，模型分位为 {rank:.1%}")
+    if "win_probability" in row:
+        parts.append(f"胜率评分 {row.get('win_probability', 0):.1%}")
     if row.get("ret_20", 0) > 0:
         parts.append("20日动量为正")
     if row.get("ma_20_gap", 0) > 0:

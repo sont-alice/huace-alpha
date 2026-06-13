@@ -15,8 +15,19 @@ BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
 
 def render_app() -> None:
     st.set_page_config(page_title="A股波段推荐", layout="wide")
-    st.title("A股波段预测推荐")
-    st.caption("本地研究辅助工具；不构成投资建议，不承诺收益或固定胜率。")
+    _apply_commercial_theme()
+    st.markdown(
+        """
+        <div class="terminal-hero">
+          <div>
+            <div class="eyebrow">A-SHARE WAVE INTELLIGENCE</div>
+            <h1>A股波段决策终端</h1>
+          </div>
+          <div class="risk-note">研究辅助工具 · 不构成投资建议 · 不承诺收益</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     with st.sidebar:
         st.header("策略设置")
@@ -88,14 +99,17 @@ def render_app() -> None:
             )
 
     result = st.session_state["result"]
-    st.info(result.provider_status.message)
+    st.markdown(f'<div class="data-banner">{result.provider_status.message}</div>', unsafe_allow_html=True)
 
-    cols = st.columns(5)
+    market_regime = _latest_market_regime(result)
+    buy_count = int((result.recommendations["action"] == "买入观察").sum()) if not result.recommendations.empty else 0
+    cols = st.columns(6)
     cols[0].metric("数据日期", result.data_date.strftime("%Y-%m-%d"))
-    cols[1].metric("样本外胜率", f"{result.metrics['sample_win_rate']:.1%}")
-    cols[2].metric("总收益", f"{result.metrics['total_return']:.1%}")
-    cols[3].metric("最大回撤", f"{result.metrics['max_drawdown']:.1%}")
-    cols[4].metric("收益回撤比", f"{result.metrics['return_drawdown_ratio']:.2f}")
+    cols[1].metric("市场状态", _market_label(market_regime), f"{market_regime:.0%}")
+    cols[2].metric("买入观察", buy_count)
+    cols[3].metric("样本外胜率", f"{result.metrics['sample_win_rate']:.1%}")
+    cols[4].metric("最大回撤", f"{result.metrics['max_drawdown']:.1%}")
+    cols[5].metric("收益回撤比", f"{result.metrics['return_drawdown_ratio']:.2f}")
 
     if result.gate_ok:
         st.success("回测门槛通过：今日推荐允许作为买入观察清单。")
@@ -110,7 +124,16 @@ def render_app() -> None:
             result.recommendations,
             use_container_width=True,
             column_config={
-                "score": st.column_config.NumberColumn("模型分", format="%.4f"),
+                "rating": st.column_config.TextColumn("评级"),
+                "action": st.column_config.TextColumn("动作"),
+                "win_probability": st.column_config.ProgressColumn("胜率评分", min_value=0, max_value=1, format="percent"),
+                "composite_score": st.column_config.ProgressColumn("综合评分", min_value=0, max_value=1, format="percent"),
+                "trend_score": st.column_config.ProgressColumn("趋势", min_value=0, max_value=1, format="percent"),
+                "risk_score": st.column_config.ProgressColumn("风险质量", min_value=0, max_value=1, format="percent"),
+                "fundamental_score": st.column_config.ProgressColumn("基本面", min_value=0, max_value=1, format="percent"),
+                "industry_score": st.column_config.ProgressColumn("行业", min_value=0, max_value=1, format="percent"),
+                "market_regime_score": st.column_config.ProgressColumn("市场", min_value=0, max_value=1, format="percent"),
+                "score": st.column_config.NumberColumn("综合分", format="%.4f"),
                 "board": st.column_config.TextColumn("市场板块"),
                 "score_rank": st.column_config.ProgressColumn("分位", min_value=0, max_value=1),
                 "close": st.column_config.NumberColumn("收盘价", format="%.2f"),
@@ -169,13 +192,14 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
         return
 
     summary = evaluation.summary
-    cols = st.columns(6)
+    cols = st.columns(7)
     cols[0].metric("结论", evaluation.conclusion)
     cols[1].metric("股票", f"{summary['名称']} {summary['代码']}")
-    cols[2].metric("模型分位", f"{summary['股票池分位']:.1%}")
-    cols[3].metric("收盘价", f"{summary['最新收盘价']:.2f}")
-    cols[4].metric("市场板块", str(summary["市场板块"]))
-    cols[5].metric("行业", str(summary["行业"]))
+    cols[2].metric("评级", str(summary["综合评级"]))
+    cols[3].metric("胜率评分", f"{summary['胜率评分']:.1%}")
+    cols[4].metric("模型分位", f"{summary['股票池分位']:.1%}")
+    cols[5].metric("收盘价", f"{summary['最新收盘价']:.2f}")
+    cols[6].metric("板块", str(summary["市场板块"]))
 
     if evaluation.conclusion == "买入观察":
         st.success(evaluation.explanation)
@@ -199,7 +223,22 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
 
 
 def _signals_to_frame(signals: dict[str, float]) -> pd.DataFrame:
-    percent_keys = {"20日收益", "60日收益", "120日收益", "20日均线偏离", "60日均线偏离", "20日波动", "ROE", "净利润增长率", "行业20日强度"}
+    percent_keys = {
+        "20日收益",
+        "60日收益",
+        "120日收益",
+        "20日均线偏离",
+        "60日均线偏离",
+        "20日波动",
+        "ROE",
+        "净利润增长率",
+        "行业20日强度",
+        "趋势评分",
+        "风险评分",
+        "基本面评分",
+        "行业评分",
+        "市场状态评分",
+    }
     rows = []
     for key, value in signals.items():
         if pd.isna(value):
@@ -214,3 +253,99 @@ def _signals_to_frame(signals: dict[str, float]) -> pd.DataFrame:
             display = f"{value:.4f}"
         rows.append({"指标": key, "数值": display})
     return pd.DataFrame(rows)
+
+
+def _latest_market_regime(result) -> float:
+    if result.latest_scored.empty or "market_regime_score" not in result.latest_scored.columns:
+        return 0.5
+    return float(result.latest_scored["market_regime_score"].mean())
+
+
+def _market_label(score: float) -> str:
+    if score >= 0.62:
+        return "允许进攻"
+    if score >= 0.45:
+        return "中性观察"
+    return "防守"
+
+
+def _apply_commercial_theme() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+          --bg: #07111f;
+          --panel: #0f1a2b;
+          --panel-2: #132238;
+          --line: #24344f;
+          --text: #e6edf7;
+          --muted: #94a3b8;
+          --blue: #2f81f7;
+          --green: #2fbf71;
+          --red: #f05252;
+          --gold: #d6a84f;
+        }
+        .stApp { background: var(--bg); color: var(--text); }
+        [data-testid="stSidebar"] { background: #081321; border-right: 1px solid var(--line); }
+        [data-testid="stMetric"] {
+          background: linear-gradient(180deg, var(--panel), #0b1727);
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          padding: 12px 14px;
+          min-height: 96px;
+        }
+        [data-testid="stMetricLabel"] { color: var(--muted); }
+        [data-testid="stMetricValue"] { color: var(--text); font-size: 1.35rem; }
+        .terminal-hero {
+          display:flex;
+          align-items:flex-end;
+          justify-content:space-between;
+          gap:16px;
+          padding: 18px 20px;
+          margin: 0 0 14px 0;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: linear-gradient(135deg, #0d1d33 0%, #07111f 58%, #111827 100%);
+        }
+        .terminal-hero h1 {
+          margin: 2px 0 0 0;
+          font-size: 28px;
+          line-height: 1.1;
+          letter-spacing: 0;
+        }
+        .eyebrow { color: var(--gold); font-size: 12px; font-weight: 700; }
+        .risk-note { color: var(--muted); font-size: 13px; white-space: nowrap; }
+        .data-banner {
+          border: 1px solid var(--line);
+          background: var(--panel);
+          border-left: 4px solid var(--blue);
+          border-radius: 6px;
+          padding: 10px 12px;
+          margin: 8px 0 14px 0;
+          color: var(--text);
+        }
+        div[data-testid="stDataFrame"] {
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          overflow: hidden;
+        }
+        .stTabs [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid var(--line); }
+        .stTabs [data-baseweb="tab"] {
+          background: var(--panel);
+          border: 1px solid var(--line);
+          border-bottom: 0;
+          border-radius: 8px 8px 0 0;
+          padding: 8px 14px;
+        }
+        .stButton > button {
+          border-radius: 6px;
+          border: 1px solid #3b82f6;
+          background: #1d4ed8;
+          color: white;
+          font-weight: 700;
+        }
+        h2, h3 { letter-spacing: 0; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )

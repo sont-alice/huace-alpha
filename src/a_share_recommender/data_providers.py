@@ -120,6 +120,8 @@ class SampleProvider:
 
     def load_market(self, request: DataRequest | None = None) -> tuple[pd.DataFrame, ProviderStatus]:
         data = make_sample_market()
+        if request:
+            data = _inject_sample_extras(data, request.extra_symbols)
         return data, ProviderStatus("sample", "使用内置样例数据；结果不是现实市场推荐。", len(data))
 
 
@@ -547,8 +549,28 @@ def _plain_symbol(symbol: str) -> str:
 
 def _merge_symbols(base: list[str], extra: tuple[str, ...]) -> list[str]:
     merged: list[str] = []
-    for symbol in [*base, *extra]:
+    for symbol in [*extra, *base]:
         plain = _plain_symbol(symbol)
         if plain and plain not in merged:
             merged.append(plain)
     return merged
+
+
+def _inject_sample_extras(data: pd.DataFrame, extra: tuple[str, ...]) -> pd.DataFrame:
+    if not extra:
+        return data
+    frames = [data]
+    template_code = data["code"].iloc[0]
+    template = data[data["code"] == template_code].copy()
+    existing = set(data["code"].unique())
+    for symbol in extra:
+        code = _suffix_code(symbol)
+        if code in existing:
+            continue
+        injected = template.copy()
+        injected["code"] = code
+        injected["name"] = _plain_symbol(symbol)
+        injected["industry"] = "样例占位"
+        injected["board"] = _board_from_symbol(symbol)
+        frames.append(injected)
+    return pd.concat(frames, ignore_index=True).sort_values(["date", "code"]).reset_index(drop=True)

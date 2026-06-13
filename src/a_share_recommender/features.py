@@ -23,16 +23,24 @@ def build_feature_frame(market: pd.DataFrame, horizon_days: int) -> pd.DataFrame
     data["amount_20"] = grouped["amount"].transform(lambda s: s.rolling(20).mean())
     data["money_flow_20"] = grouped["money_flow"].transform(lambda s: s.rolling(20).sum())
     data["market_cap_log"] = np.log(data["market_cap"].clip(lower=1))
+    market_daily = data.groupby("date")["daily_ret"].median().rename("market_daily_ret").reset_index()
+    market_daily["market_return_20"] = market_daily["market_daily_ret"].rolling(20, min_periods=20).sum()
+    data = data.merge(market_daily[["date", "market_return_20"]], on="date", how="left")
 
     industry_daily = data.groupby(["industry", "date"])["daily_ret"].mean().reset_index()
     industry_daily["industry_strength_20"] = industry_daily.groupby("industry")["daily_ret"].transform(
         lambda s: s.rolling(20, min_periods=20).sum()
     )
+    date_state = data.groupby("date").agg(
+        market_breadth_20=("ret_20", lambda s: float((s > 0).mean())),
+        market_above_ma20=("ma_20_gap", lambda s: float((s > 0).mean())),
+    ).reset_index()
     data = data.merge(
         industry_daily[["industry", "date", "industry_strength_20"]],
         on=["industry", "date"],
         how="left",
     ).sort_values(["code", "date"])
+    data = data.merge(date_state, on="date", how="left").sort_values(["code", "date"])
     grouped = data.groupby("code", group_keys=False)
 
     future_close = grouped["close"].shift(-horizon_days)

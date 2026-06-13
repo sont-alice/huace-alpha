@@ -13,7 +13,8 @@ def run_backtest(scored: pd.DataFrame, config: StrategyConfig, start_date: pd.Ti
     rows = []
 
     for date in rebalance_dates:
-        day = test[test["date"] == date].sort_values("score", ascending=False)
+        sort_column = "composite_score" if "composite_score" in test.columns else "score"
+        day = test[test["date"] == date].sort_values(sort_column, ascending=False)
         picks = _cap_industry(day.head(config.top_n * 3), config).head(config.top_n)
         if picks.empty:
             continue
@@ -91,4 +92,3 @@ def _empty_metrics() -> dict[str, float]:
         "return_drawdown_ratio": 0.0,
         "periods": 0.0,
     }
-

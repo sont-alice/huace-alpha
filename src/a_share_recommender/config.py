@@ -11,6 +11,8 @@ class StrategyConfig:
     min_sample_win_rate_edge: float = 0.05
     min_return_drawdown_ratio: float = 1.0
     max_drawdown_limit: float = 0.25
+    min_composite_score: float = 0.72
+    min_market_regime_score: float = 0.45
 
 
 FEATURE_COLUMNS = [
@@ -28,5 +30,7 @@ FEATURE_COLUMNS = [
     "roe",
     "net_profit_growth",
     "market_cap_log",
+    "market_return_20",
+    "market_breadth_20",
+    "market_above_ma20",
 ]
-

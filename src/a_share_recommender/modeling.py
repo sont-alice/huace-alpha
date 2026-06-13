@@ -3,10 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor, VotingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 from .config import FEATURE_COLUMNS
 
@@ -31,15 +30,42 @@ def train_model(features: pd.DataFrame) -> ModelResult:
     model = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
             (
                 "regressor",
-                HistGradientBoostingRegressor(
-                    max_iter=180,
-                    learning_rate=0.045,
-                    max_leaf_nodes=24,
-                    l2_regularization=0.05,
-                    random_state=7,
+                VotingRegressor(
+                    estimators=[
+                        (
+                            "hgb",
+                            HistGradientBoostingRegressor(
+                                max_iter=180,
+                                learning_rate=0.045,
+                                max_leaf_nodes=24,
+                                l2_regularization=0.05,
+                                random_state=7,
+                            ),
+                        ),
+                        (
+                            "rf",
+                            RandomForestRegressor(
+                                n_estimators=70,
+                                min_samples_leaf=10,
+                                max_features=0.7,
+                                n_jobs=-1,
+                                random_state=17,
+                            ),
+                        ),
+                        (
+                            "extra",
+                            ExtraTreesRegressor(
+                                n_estimators=90,
+                                min_samples_leaf=8,
+                                max_features=0.8,
+                                n_jobs=-1,
+                                random_state=29,
+                            ),
+                        ),
+                    ],
+                    weights=[0.48, 0.25, 0.27],
                 ),
             ),
         ]
@@ -53,4 +79,3 @@ def score_frame(model: Pipeline, frame: pd.DataFrame) -> pd.DataFrame:
     scored["score"] = model.predict(scored[FEATURE_COLUMNS])
     scored["score_rank"] = scored.groupby("date")["score"].rank(pct=True)
     return scored
-

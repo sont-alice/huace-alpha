@@ -46,7 +46,7 @@ def test_stock_evaluation_for_existing_sample_stock():
     assert evaluation.found
     assert evaluation.summary["代码"] == "600000.SH"
     assert evaluation.summary["市场板块"] == "上证主板"
-    assert evaluation.conclusion in {"买入观察", "仅观察", "不建议介入"}
+    assert evaluation.conclusion in {"买入观察", "等回调", "仅观察", "不建议介入"}
     assert not evaluation.price_history.empty
 
 
