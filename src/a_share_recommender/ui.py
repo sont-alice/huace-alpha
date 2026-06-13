@@ -122,6 +122,8 @@ def render_app() -> None:
 
     result = st.session_state["result"]
     st.markdown(f'<div class="data-banner">{result.provider_status.message}</div>', unsafe_allow_html=True)
+    if result.provider_status.mode == "akshare-stale-cache":
+        st.warning("当前 AKShare 在线接口连接失败，系统使用最近一次真实数据缓存继续运行。请注意数据日期，并在网络恢复后勾选“忽略今日缓存并重新拉取”。")
 
     market_regime = _latest_market_regime(result)
     buy_count = int((result.recommendations["action"] == "买入观察").sum()) if not result.recommendations.empty else 0

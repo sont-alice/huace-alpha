@@ -156,22 +156,21 @@ class AkshareProvider:
         errors: list[str] = []
         for symbol in symbols:
             try:
-                raw = ak.stock_zh_a_hist(
-                    symbol=symbol,
-                    period="daily",
-                    start_date=start_date,
-                    end_date=end_date,
-                    adjust="qfq",
-                )
+                raw = _load_akshare_hist_with_retry(ak, symbol, start_date, end_date)
                 if raw.empty:
+                    errors.append(f"{symbol}:Empty")
                     continue
                 meta = full_universe.loc[full_universe["code"] == symbol].head(1)
                 frames.append(_normalize_akshare_hist(raw, meta))
-                time.sleep(0.08)
+                time.sleep(0.15)
             except Exception as exc:
                 errors.append(f"{symbol}:{type(exc).__name__}")
 
         if not frames:
+            stale = _load_latest_provider_cache(self.cache_dir, "akshare")
+            if stale is not None:
+                message = "AKShare 当前连接失败，已使用最近一次真实数据缓存；失败样本：" + "；".join(errors[:5])
+                return stale, ProviderStatus("akshare-stale-cache", message, len(stale))
             raise RuntimeError("AKShare 日线接口未返回可用数据：" + "；".join(errors[:5]))
 
         data = pd.concat(frames, ignore_index=True)
@@ -286,6 +285,44 @@ def _cache_path(cache_dir: Path, provider: str, request: DataRequest) -> Path:
     key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{extras}-{boards}-{date.today():%Y%m%d}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return cache_dir / f"{provider}_{digest}.parquet"
+
+
+def _load_akshare_hist_with_retry(ak, symbol: str, start_date: str, end_date: str, attempts: int = 3) -> pd.DataFrame:
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return ak.stock_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",
+            )
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.8 * (attempt + 1))
+    if last_exc:
+        raise last_exc
+    return pd.DataFrame()
+
+
+def _load_latest_provider_cache(cache_dir: Path, provider: str) -> pd.DataFrame | None:
+    if not cache_dir.exists():
+        return None
+    candidates = sorted(
+        [path for path in cache_dir.glob(f"{provider}_*.parquet") if path.name != f"{provider}_universe.parquet"],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            data = pd.read_parquet(path)
+            required = {"date", "code", "close", "name"}
+            if not data.empty and required.issubset(data.columns):
+                return data
+        except Exception:
+            continue
+    return None
 
 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
