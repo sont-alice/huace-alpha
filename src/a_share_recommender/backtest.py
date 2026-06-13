@@ -15,7 +15,7 @@ def run_backtest(scored: pd.DataFrame, config: StrategyConfig, start_date: pd.Ti
     for date in rebalance_dates:
         sort_column = "composite_score" if "composite_score" in test.columns else "score"
         day = test[test["date"] == date].sort_values(sort_column, ascending=False)
-        picks = _cap_industry(day.head(config.top_n * 3), config).head(config.top_n)
+        picks = _cap_industry(day.head(config.top_n * 8), config).head(config.top_n)
         if picks.empty:
             continue
         gross = picks["future_return"].mean()
@@ -79,7 +79,26 @@ def _tradable(frame: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
 
 def _cap_industry(frame: pd.DataFrame, config: StrategyConfig) -> pd.DataFrame:
     max_per_industry = max(1, int(np.ceil(config.top_n * config.max_industry_weight)))
-    return frame.groupby("industry", group_keys=False).head(max_per_industry)
+    selected = []
+    industry_counts: dict[str, int] = {}
+
+    for idx, row in frame.iterrows():
+        industry = str(row.get("industry", "未知"))
+        if industry_counts.get(industry, 0) >= max_per_industry:
+            continue
+        selected.append(idx)
+        industry_counts[industry] = industry_counts.get(industry, 0) + 1
+        if len(selected) >= config.top_n:
+            break
+
+    if len(selected) < min(config.top_n, len(frame)):
+        for idx in frame.index:
+            if idx not in selected:
+                selected.append(idx)
+            if len(selected) >= min(config.top_n, len(frame)):
+                break
+
+    return frame.loc[selected]
 
 
 def _empty_metrics() -> dict[str, float]:

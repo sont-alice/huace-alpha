@@ -111,6 +111,7 @@ class DataRequest:
     use_finance: bool = True
     force_sample: bool = False
     force_refresh: bool = False
+    allow_sample_fallback: bool = False
     extra_symbols: tuple[str, ...] = ()
     boards: tuple[str, ...] = ("上证主板", "深证主板", "创业板", "科创板")
 
@@ -265,9 +266,11 @@ class ProviderRouter:
             except Exception as exc:
                 self.last_errors.append(f"{provider.name}: {exc}")
 
-        data, status = SampleProvider().load_market(request)
-        message = status.message + " 真实数据源不可用：" + " | ".join(self.last_errors[:3])
-        return data, ProviderStatus("sample-fallback", message, len(data))
+        if request.allow_sample_fallback:
+            data, status = SampleProvider().load_market(request)
+            message = status.message + " 真实数据源不可用：" + " | ".join(self.last_errors[:3])
+            return data, ProviderStatus("sample-fallback", message, len(data))
+        raise RuntimeError("真实数据源不可用：" + " | ".join(self.last_errors[:3]))
 
     def availability(self) -> dict[str, str]:
         return {

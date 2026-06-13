@@ -4,6 +4,7 @@ from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
 from a_share_recommender.features import build_feature_frame
 from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
+from a_share_recommender.backtest import _cap_industry
 
 
 def test_feature_frame_has_expected_columns():
@@ -55,3 +56,11 @@ def test_stock_evaluation_for_missing_code():
     result = run_pipeline(config, data_request=DataRequest(force_sample=True))
     evaluation = evaluate_stock("999999", result.market, result.latest_scored, config, result.gate_ok)
     assert not evaluation.found
+
+
+def test_industry_cap_fills_to_top_n_when_candidates_exist():
+    frame = make_sample_market(n_stocks=18, n_days=40).groupby("code").tail(1).copy()
+    frame["industry"] = ["同一行业"] * 12 + ["行业B"] * 6
+    config = StrategyConfig(top_n=10, max_industry_weight=0.3)
+    selected = _cap_industry(frame, config)
+    assert len(selected) == 10

@@ -10,10 +10,11 @@ from .config import StrategyConfig
 def make_recommendations(latest_scored: pd.DataFrame, config: StrategyConfig, allow_buy: bool) -> pd.DataFrame:
     sort_column = "composite_score" if "composite_score" in latest_scored.columns else "score"
     candidates = _tradable(latest_scored, config).sort_values(sort_column, ascending=False)
-    candidates = _cap_industry(candidates.head(config.top_n * 4), config).head(config.top_n).copy()
+    candidates = _cap_industry(candidates.head(config.top_n * 8), config).head(config.top_n).copy()
     if candidates.empty:
         return candidates
 
+    candidates["rating"] = _candidate_ratings(candidates)
     candidates["action"] = candidates.apply(lambda row: _action(row, config, allow_buy), axis=1)
     candidates["holding_plan"] = f"{max(20, config.horizon_days - 5)}-{config.horizon_days + 10}个交易日"
     stop_pct = np.clip(candidates["volatility_20"].fillna(0.03) * 3.0, 0.06, 0.14)
@@ -75,8 +76,8 @@ def _reason(row: pd.Series) -> str:
         reasons.append("近20日资金净流入")
     if row["roe"] > 0.1:
         reasons.append("ROE较好")
-    if row.get("rating", "C") in {"A", "S"}:
-        reasons.append(f"综合评级{row.get('rating')}")
+    if row.get("rating") == "优选":
+        reasons.append("候选等级优选")
     return "；".join(reasons[:4]) if reasons else "模型综合评分靠前"
 
 
@@ -88,3 +89,18 @@ def _action(row: pd.Series, config: StrategyConfig, allow_buy: bool) -> str:
     if row.get("trend_score", 0) >= 0.7 and row.get("risk_score", 0) >= 0.4:
         return "等回调"
     return "仅观察"
+
+
+def _candidate_ratings(candidates: pd.DataFrame) -> pd.Series:
+    scores = candidates["composite_score"] if "composite_score" in candidates.columns else candidates["score"]
+    ranks = scores.rank(pct=True)
+    labels = []
+    for idx, rank in ranks.items():
+        absolute = float(scores.loc[idx])
+        if absolute >= 0.82 and rank >= 0.80:
+            labels.append("优选")
+        elif absolute >= 0.64:
+            labels.append("备选")
+        else:
+            labels.append("观察")
+    return pd.Series(labels, index=candidates.index)

@@ -11,11 +11,17 @@ from .pipeline import run_pipeline
 
 
 BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
+APP_STATE_VERSION = "landing-no-auto-run-v1"
 
 
 def render_app() -> None:
     st.set_page_config(page_title="A股波段推荐", layout="wide")
     _apply_commercial_theme()
+    if st.session_state.get("app_state_version") != APP_STATE_VERSION:
+        st.session_state.pop("result", None)
+        st.session_state.pop("run_error", None)
+        st.session_state.pop("cache_key", None)
+        st.session_state["app_state_version"] = APP_STATE_VERSION
     st.markdown(
         """
         <div class="terminal-hero">
@@ -51,7 +57,8 @@ def render_app() -> None:
         history_years = st.slider("历史数据年限", 2, 6, 4, 1, disabled=force_sample)
         use_finance = st.checkbox("启用财务增强（较慢）", value=True, disabled=force_sample)
         force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False, disabled=force_sample)
-        run = st.button("生成今日推荐", type="primary")
+        run = st.button("生成今日推荐", type="primary", use_container_width=True)
+        evaluate_only = st.button("评估输入股票", use_container_width=True)
 
     config = StrategyConfig(
         horizon_days=horizon,
@@ -66,6 +73,7 @@ def render_app() -> None:
         use_finance=use_finance,
         force_sample=force_sample,
         force_refresh=force_refresh,
+        allow_sample_fallback=force_sample,
         extra_symbols=extra_symbols,
         boards=tuple(boards or BOARD_OPTIONS),
     )
@@ -87,16 +95,30 @@ def render_app() -> None:
     )
     if st.session_state.get("cache_key") != cache_key:
         st.session_state.pop("result", None)
+        st.session_state.pop("run_error", None)
         st.session_state["cache_key"] = cache_key
 
-    if "result" not in st.session_state or run:
+    requested_run = run or evaluate_only
+    if requested_run:
         with st.spinner("正在更新数据、训练模型并回测。真实数据首次拉取可能需要数分钟..."):
-            st.session_state["result"] = run_pipeline(
-                config,
-                prefer_tushare=prefer_tushare,
-                tushare_token=tushare_token or None,
-                data_request=data_request,
-            )
+            try:
+                st.session_state["result"] = run_pipeline(
+                    config,
+                    prefer_tushare=prefer_tushare,
+                    tushare_token=tushare_token or None,
+                    data_request=data_request,
+                )
+                st.session_state.pop("run_error", None)
+            except Exception as exc:
+                st.session_state.pop("result", None)
+                st.session_state["run_error"] = str(exc)
+
+    if "result" not in st.session_state:
+        _render_landing(evaluation_code, force_sample)
+        if "run_error" in st.session_state:
+            st.error(st.session_state["run_error"])
+            st.info("真实数据失败时不会展示样例推荐。可以点击“忽略今日缓存并重新拉取”，或主动开启“演示模式”查看界面流程。")
+        return
 
     result = st.session_state["result"]
     st.markdown(f'<div class="data-banner">{result.provider_status.message}</div>', unsafe_allow_html=True)
@@ -124,7 +146,7 @@ def render_app() -> None:
             result.recommendations,
             use_container_width=True,
             column_config={
-                "rating": st.column_config.TextColumn("评级"),
+                "rating": st.column_config.TextColumn("候选等级"),
                 "action": st.column_config.TextColumn("动作"),
                 "win_probability": st.column_config.ProgressColumn("胜率评分", min_value=0, max_value=1, format="percent"),
                 "composite_score": st.column_config.ProgressColumn("综合评分", min_value=0, max_value=1, format="percent"),
@@ -220,6 +242,31 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
     price = price.rename(columns={"close": "收盘价", "ma20": "20日均线", "ma60": "60日均线"})
     fig = px.line(price, x="date", y=["收盘价", "20日均线", "60日均线"], labels={"value": "价格", "variable": "序列"})
     st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_landing(evaluation_code: str, force_sample: bool) -> None:
+    st.markdown(
+        """
+        <div class="landing-grid">
+          <div class="landing-card">
+            <div class="card-title">今日工作台</div>
+            <div class="card-copy">选择市场板块和数据源后，点击左侧“生成今日推荐”。系统会拉取真实行情、训练集成模型并输出经过风控过滤的候选清单。</div>
+          </div>
+          <div class="landing-card">
+            <div class="card-title">个股评估</div>
+            <div class="card-copy">输入股票代码后点击“评估输入股票”。系统会强制拉取该股票，展示评级、胜率评分、趋势、基本面和风险解释。</div>
+          </div>
+          <div class="landing-card">
+            <div class="card-title">数据纪律</div>
+            <div class="card-copy">默认只展示真实数据结果。公开接口失败时不自动混入样例推荐；只有主动开启演示模式才使用样例数据。</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    next_step = "已输入代码，点击左侧“评估输入股票”开始。" if evaluation_code.strip() else "可先输入股票代码，或直接生成今日推荐。"
+    mode = "当前为演示模式，会使用样例数据。" if force_sample else "当前为真实数据模式。"
+    st.markdown(f'<div class="data-banner">{mode} {next_step}</div>', unsafe_allow_html=True)
 
 
 def _signals_to_frame(signals: dict[str, float]) -> pd.DataFrame:
@@ -323,6 +370,30 @@ def _apply_commercial_theme() -> None:
           padding: 10px 12px;
           margin: 8px 0 14px 0;
           color: var(--text);
+        }
+        .landing-grid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+          margin: 12px 0 16px 0;
+        }
+        .landing-card {
+          border: 1px solid var(--line);
+          background: linear-gradient(180deg, var(--panel), #0a1524);
+          border-radius: 8px;
+          padding: 18px;
+          min-height: 150px;
+        }
+        .card-title {
+          color: var(--text);
+          font-size: 18px;
+          font-weight: 800;
+          margin-bottom: 10px;
+        }
+        .card-copy {
+          color: var(--muted);
+          font-size: 14px;
+          line-height: 1.65;
         }
         div[data-testid="stDataFrame"] {
           border: 1px solid var(--line);
