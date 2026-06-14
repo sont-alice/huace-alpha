@@ -11,7 +11,7 @@ from .pipeline import run_pipeline
 
 
 BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
-APP_STATE_VERSION = "landing-no-auto-run-v1"
+APP_STATE_VERSION = "full-market-ranking-v1"
 
 
 def render_app() -> None:
@@ -53,7 +53,10 @@ def render_app() -> None:
         prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False, disabled=force_sample)
         tushare_token = st.text_input("Tushare token", type="password", disabled=force_sample)
         boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS, disabled=force_sample)
-        max_symbols = st.slider("真实数据股票数量", 5, 80, 30, 5, disabled=force_sample)
+        full_market_scan = st.checkbox("全市场扫描排名（正式模式，较慢）", value=False, disabled=force_sample)
+        if full_market_scan and not force_sample:
+            st.caption("开启后将扫描所选板块的全部 A 股，并按综合评估从高到低输出；首次运行可能需要较长时间，系统会复用单股缓存。")
+        max_symbols = st.slider("真实数据股票数量", 5, 80, 30, 5, disabled=force_sample or full_market_scan)
         history_years = st.slider("历史数据年限", 2, 6, 4, 1, disabled=force_sample)
         use_finance = st.checkbox("启用财务增强（较慢）", value=True, disabled=force_sample)
         force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False, disabled=force_sample)
@@ -76,6 +79,7 @@ def render_app() -> None:
         allow_sample_fallback=force_sample,
         extra_symbols=extra_symbols,
         boards=tuple(boards or BOARD_OPTIONS),
+        full_market_scan=full_market_scan and not force_sample,
     )
 
     cache_key = (
@@ -92,6 +96,7 @@ def render_app() -> None:
         use_finance,
         force_sample,
         force_refresh,
+        full_market_scan,
     )
     if st.session_state.get("cache_key") != cache_key:
         st.session_state.pop("result", None)
@@ -137,10 +142,15 @@ def render_app() -> None:
 
     with tab_rec:
         st.subheader("推荐列表")
+        if data_request.full_market_scan:
+            st.caption("当前为全市场扫描口径：候选股来自所选板块全部可交易股票，并严格按综合评估从高到低排列。")
+        else:
+            st.caption("当前为快速抽样口径：候选股来自抽样股票池，并启用板块/行业分散约束。正式推荐请开启左侧全市场扫描。")
         st.dataframe(
             result.recommendations,
             use_container_width=True,
             column_config={
+                "market_rank": st.column_config.NumberColumn("全市场排名", format="%d"),
                 "rating": st.column_config.TextColumn("候选等级"),
                 "action": st.column_config.TextColumn("动作"),
                 "win_probability": st.column_config.ProgressColumn("胜率评分", min_value=0, max_value=1, format="percent"),

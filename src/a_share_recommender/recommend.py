@@ -7,11 +7,16 @@ from .backtest import _cap_industry, _tradable
 from .config import StrategyConfig
 
 
-def make_recommendations(latest_scored: pd.DataFrame, config: StrategyConfig, allow_buy: bool) -> pd.DataFrame:
+def make_recommendations(latest_scored: pd.DataFrame, config: StrategyConfig, allow_buy: bool, strict_rank: bool = False) -> pd.DataFrame:
     sort_column = "composite_score" if "composite_score" in latest_scored.columns else "score"
     candidates = _tradable(latest_scored, config).sort_values(sort_column, ascending=False)
-    candidates = _cap_board(candidates.head(config.top_n * 10), config)
-    candidates = _cap_industry(candidates.head(config.top_n * 8), config).head(config.top_n).copy()
+    candidates = candidates.copy()
+    candidates["market_rank"] = np.arange(1, len(candidates) + 1)
+    if strict_rank:
+        candidates = candidates.head(config.top_n).copy()
+    else:
+        candidates = _cap_board(candidates.head(config.top_n * 10), config)
+        candidates = _cap_industry(candidates.head(config.top_n * 8), config).head(config.top_n).copy()
     if candidates.empty:
         return candidates
 
@@ -26,6 +31,7 @@ def make_recommendations(latest_scored: pd.DataFrame, config: StrategyConfig, al
     return candidates[
         [
             "code",
+            "market_rank",
             "name",
             "industry",
             "board",

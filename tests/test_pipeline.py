@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
 from a_share_recommender.data_providers import (
@@ -6,6 +7,8 @@ from a_share_recommender.data_providers import (
     _cache_satisfies_request,
     _load_latest_provider_cache,
     _normalize_akshare_tx_hist,
+    _assert_full_market_universe,
+    _select_request_symbols,
     _tx_symbol,
     known_stock_identity,
 )
@@ -15,7 +18,7 @@ from a_share_recommender.features import build_feature_frame
 from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
 from a_share_recommender.backtest import _cap_industry
-from a_share_recommender.recommend import _cap_board
+from a_share_recommender.recommend import _cap_board, make_recommendations
 
 
 def test_feature_frame_has_expected_columns():
@@ -153,3 +156,55 @@ def test_narrow_cache_does_not_satisfy_multi_board_request():
     data = make_sample_market(n_stocks=3, n_days=40)
     data["board"] = "深证主板"
     assert not _cache_satisfies_request(data, DataRequest(max_symbols=30))
+
+
+def test_full_market_request_selects_all_filtered_symbols():
+    universe = _core_fallback_universe()
+    boards = ("深证主板", "创业板")
+    filtered = _filter_boards(universe, boards)
+    request = DataRequest(max_symbols=5, boards=boards, full_market_scan=True)
+    selected = _select_request_symbols(filtered, request)
+    assert len(selected) == filtered["code"].nunique()
+    assert len(selected) > request.max_symbols
+
+
+def test_full_market_rejects_core_only_universe():
+    request = DataRequest(full_market_scan=True)
+    with pytest.raises(RuntimeError, match="全市场扫描需要完整"):
+        _assert_full_market_universe(_core_fallback_universe(), request, "code")
+
+
+def test_full_market_recommendations_keep_score_order():
+    frame = make_sample_market(n_stocks=12, n_days=40).groupby("code").tail(1).copy().reset_index(drop=True)
+    frame["industry"] = "同一行业"
+    frame["board"] = "上证主板"
+    frame["composite_score"] = [0.99, 0.98, 0.97, 0.96, 0.95, 0.94, 0.50, 0.49, 0.48, 0.47, 0.46, 0.45]
+    frame["score"] = frame["composite_score"]
+    frame["score_rank"] = frame["composite_score"].rank(pct=True)
+    frame["win_probability"] = frame["composite_score"]
+    frame["trend_score"] = frame["composite_score"]
+    frame["risk_score"] = 0.8
+    frame["fundamental_score"] = 0.8
+    frame["industry_score"] = 0.8
+    frame["market_regime_score"] = 0.8
+    frame["amount_20"] = 100_000_000
+    frame["is_st"] = False
+    frame["suspended"] = False
+    frame["list_days"] = 999
+    frame["volatility_20"] = 0.02
+    frame["pe_ttm"] = 20
+    frame["industry_strength_20"] = 0.1
+    frame["ret_20"] = 0.05
+    frame["ma_20_gap"] = 0.03
+    frame["money_flow_20"] = 1
+    frame["roe"] = 0.12
+
+    recommendations = make_recommendations(
+        frame,
+        StrategyConfig(top_n=5, min_amount=1_000_000),
+        allow_buy=True,
+        strict_rank=True,
+    )
+
+    assert recommendations["composite_score"].tolist() == sorted(recommendations["composite_score"], reverse=True)
+    assert recommendations["market_rank"].tolist() == [1, 2, 3, 4, 5]

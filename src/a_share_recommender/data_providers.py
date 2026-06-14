@@ -162,6 +162,7 @@ class DataRequest:
     force_refresh: bool = False
     allow_sample_fallback: bool = False
     extra_symbols: tuple[str, ...] = ()
+    full_market_scan: bool = False
     boards: tuple[str, ...] = ("上证主板", "深证主板", "创业板", "科创板")
 
 
@@ -194,8 +195,9 @@ class AkshareProvider:
         import akshare as ak
 
         full_universe = _akshare_universe(ak, self.cache_dir, request.force_refresh)
+        _assert_full_market_universe(full_universe, request, "code")
         universe = _filter_boards(full_universe, request.boards)
-        symbols = _merge_symbols(_select_symbols_by_board(universe, request.max_symbols, request.boards), request.extra_symbols)
+        symbols = _select_request_symbols(universe, request)
         if not symbols:
             symbols = CORE_A_SHARE_POOL[: request.max_symbols]
 
@@ -206,15 +208,26 @@ class AkshareProvider:
         errors: list[str] = []
         for symbol in symbols:
             try:
+                meta = full_universe.loc[full_universe["code"] == symbol].head(1)
+                symbol_cache = _symbol_cache_path(self.cache_dir, "akshare", symbol, start_date, end_date)
+                cached = _load_symbol_cache(symbol_cache, request.force_refresh)
+                if cached is not None:
+                    frames.append(cached)
+                    continue
+
                 raw, source = _load_akshare_hist_with_retry(ak, symbol, start_date, end_date)
                 if raw.empty:
                     errors.append(f"{symbol}:Empty")
                     continue
-                meta = full_universe.loc[full_universe["code"] == symbol].head(1)
                 if source == "tx":
-                    frames.append(_normalize_akshare_tx_hist(raw, symbol, meta))
+                    normalized = _normalize_akshare_tx_hist(raw, symbol, meta)
                 else:
-                    frames.append(_normalize_akshare_hist(raw, meta))
+                    normalized = _normalize_akshare_hist(raw, meta)
+                if normalized.empty:
+                    errors.append(f"{symbol}:Empty")
+                    continue
+                _save_symbol_cache(symbol_cache, normalized)
+                frames.append(normalized)
                 time.sleep(0.15)
             except Exception as exc:
                 errors.append(f"{symbol}:{type(exc).__name__}")
@@ -259,10 +272,11 @@ class TushareProvider:
         ts.set_token(self.token)
         pro = ts.pro_api(self.token)
         full_universe = _tushare_universe(pro)
+        _assert_full_market_universe(full_universe, request, "ts_code")
         universe = _filter_boards(full_universe, request.boards)
         symbols = [
             _suffix_code(symbol)
-            for symbol in _merge_symbols(_select_symbols_by_board(universe.rename(columns={"ts_code": "code"}), request.max_symbols, request.boards), request.extra_symbols)
+            for symbol in _select_request_symbols(universe.rename(columns={"ts_code": "code"}), request)
         ]
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
@@ -339,9 +353,31 @@ class ProviderRouter:
 def _cache_path(cache_dir: Path, provider: str, request: DataRequest) -> Path:
     extras = ",".join(sorted(_plain_symbol(symbol) for symbol in request.extra_symbols))
     boards = ",".join(request.boards)
-    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{extras}-{boards}-{date.today():%Y%m%d}"
+    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{request.full_market_scan}-{extras}-{boards}-{date.today():%Y%m%d}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return cache_dir / f"{provider}_{digest}.parquet"
+
+
+def _symbol_cache_path(cache_dir: Path, provider: str, symbol: str, start_date: str, end_date: str) -> Path:
+    return cache_dir / "symbols" / provider / f"{_plain_symbol(symbol)}_{start_date}_{end_date}.parquet"
+
+
+def _load_symbol_cache(path: Path, force_refresh: bool) -> pd.DataFrame | None:
+    if force_refresh or not path.exists():
+        return None
+    try:
+        data = pd.read_parquet(path)
+    except Exception:
+        return None
+    required = {"date", "code", "close", "name"}
+    if data.empty or not required.issubset(data.columns):
+        return None
+    return data
+
+
+def _save_symbol_cache(path: Path, data: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data.to_parquet(path, index=False)
 
 
 def _load_akshare_hist_with_retry(ak, symbol: str, start_date: str, end_date: str, attempts: int = 3) -> tuple[pd.DataFrame, str]:
@@ -402,17 +438,13 @@ def _load_latest_provider_cache(cache_dir: Path, provider: str, request: DataReq
         return None
 
     latest_by_code = filtered.sort_values("date").groupby("code").tail(1)
-    selected_plain = _merge_symbols(
-        _select_symbols_by_board(
-            latest_by_code.assign(code=latest_by_code["code"].map(_plain_symbol)),
-            request.max_symbols,
-            request.boards,
-        ),
-        request.extra_symbols,
+    selected_plain = _select_request_symbols(
+        latest_by_code.assign(code=latest_by_code["code"].map(_plain_symbol)),
+        request,
     )
     selected_codes = {_suffix_code(symbol) for symbol in selected_plain}
     selected = filtered[filtered["code"].isin(selected_codes)].copy()
-    if selected["code"].nunique() < max(3, min(request.max_symbols, 8)):
+    if selected["code"].nunique() < _min_symbols_for_request(request):
         return None
     return selected.sort_values(["date", "code"]).reset_index(drop=True)
 
@@ -423,7 +455,7 @@ def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
     required_extras = {_suffix_code(symbol) for symbol in request.extra_symbols if _plain_symbol(symbol)}
     if required_extras and not required_extras.issubset(set(data["code"].astype(str))):
         return False
-    min_symbols = max(3, min(request.max_symbols, 8))
+    min_symbols = _min_symbols_for_request(request)
     if data["code"].nunique() < min_symbols:
         return False
     if "board" in data.columns:
@@ -432,6 +464,19 @@ def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
         if len(requested_boards) >= 2 and request.max_symbols >= 8 and len(available_requested) < 2:
             return False
     return True
+
+
+def _min_symbols_for_request(request: DataRequest) -> int:
+    if request.full_market_scan:
+        return 300
+    return max(3, min(request.max_symbols, 8))
+
+
+def _assert_full_market_universe(universe: pd.DataFrame, request: DataRequest, code_column: str) -> None:
+    if not request.full_market_scan:
+        return
+    if universe.empty or code_column not in universe.columns or universe[code_column].nunique() < 1000:
+        raise RuntimeError("全市场扫描需要完整 A 股股票列表；当前数据源只返回了过少股票，不能作为全市场推荐依据。请稍后重试、使用 Tushare token，或关闭全市场扫描改用快速抽样。")
 
 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
@@ -779,6 +824,16 @@ def _select_symbols_by_board(universe: pd.DataFrame, max_symbols: int, boards: t
             if len(selected) >= max_symbols:
                 break
     return selected[:max_symbols]
+
+
+def _select_request_symbols(universe: pd.DataFrame, request: DataRequest) -> list[str]:
+    if universe.empty:
+        return _merge_symbols([], request.extra_symbols)
+    if request.full_market_scan:
+        base = universe["code"].astype(str).tolist()
+    else:
+        base = _select_symbols_by_board(universe, request.max_symbols, request.boards)
+    return _merge_symbols(base, request.extra_symbols)
 
 
 def _plain_symbol(symbol: str) -> str:

@@ -34,8 +34,9 @@ def run_pipeline(
     tushare_token: str | None = None,
     data_request: DataRequest | None = None,
 ) -> PipelineResult:
+    data_request = data_request or DataRequest()
     router = ProviderRouter(prefer_tushare=prefer_tushare, tushare_token=tushare_token)
-    market, status = router.load_market(data_request or DataRequest())
+    market, status = router.load_market(data_request)
     features = build_feature_frame(market, horizon_days=config.horizon_days)
     model_result = train_model(features)
     scored = enrich_scores(score_frame(model_result.model, features.dropna(subset=["excess_return"]).copy()), config)
@@ -44,7 +45,7 @@ def run_pipeline(
 
     latest = latest_features(features)
     latest_scored = enrich_scores(score_frame(model_result.model, latest), config)
-    recommendations = make_recommendations(latest_scored, config, gate_ok)
+    recommendations = make_recommendations(latest_scored, config, gate_ok, strict_rank=data_request.full_market_scan)
     return PipelineResult(
         provider_status=status,
         model_result=model_result,
