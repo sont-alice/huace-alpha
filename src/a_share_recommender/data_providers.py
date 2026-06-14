@@ -206,12 +206,15 @@ class AkshareProvider:
         errors: list[str] = []
         for symbol in symbols:
             try:
-                raw = _load_akshare_hist_with_retry(ak, symbol, start_date, end_date)
+                raw, source = _load_akshare_hist_with_retry(ak, symbol, start_date, end_date)
                 if raw.empty:
                     errors.append(f"{symbol}:Empty")
                     continue
                 meta = full_universe.loc[full_universe["code"] == symbol].head(1)
-                frames.append(_normalize_akshare_hist(raw, meta))
+                if source == "tx":
+                    frames.append(_normalize_akshare_tx_hist(raw, symbol, meta))
+                else:
+                    frames.append(_normalize_akshare_hist(raw, meta))
                 time.sleep(0.15)
             except Exception as exc:
                 errors.append(f"{symbol}:{type(exc).__name__}")
@@ -341,7 +344,7 @@ def _cache_path(cache_dir: Path, provider: str, request: DataRequest) -> Path:
     return cache_dir / f"{provider}_{digest}.parquet"
 
 
-def _load_akshare_hist_with_retry(ak, symbol: str, start_date: str, end_date: str, attempts: int = 3) -> pd.DataFrame:
+def _load_akshare_hist_with_retry(ak, symbol: str, start_date: str, end_date: str, attempts: int = 3) -> tuple[pd.DataFrame, str]:
     last_exc: Exception | None = None
     for attempt in range(attempts):
         try:
@@ -351,13 +354,22 @@ def _load_akshare_hist_with_retry(ak, symbol: str, start_date: str, end_date: st
                 start_date=start_date,
                 end_date=end_date,
                 adjust="qfq",
-            )
+            ), "em"
         except Exception as exc:
             last_exc = exc
             time.sleep(0.8 * (attempt + 1))
+    try:
+        return ak.stock_zh_a_hist_tx(
+            symbol=_tx_symbol(symbol),
+            start_date=start_date,
+            end_date=end_date,
+            adjust="qfq",
+        ), "tx"
+    except Exception as exc:
+        last_exc = exc
     if last_exc:
         raise last_exc
-    return pd.DataFrame()
+    return pd.DataFrame(), "em"
 
 
 def _load_latest_provider_cache(cache_dir: Path, provider: str, request: DataRequest | None = None) -> pd.DataFrame | None:
@@ -407,6 +419,9 @@ def _load_latest_provider_cache(cache_dir: Path, provider: str, request: DataReq
 
 def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
     if data.empty or "code" not in data.columns:
+        return False
+    required_extras = {_suffix_code(symbol) for symbol in request.extra_symbols if _plain_symbol(symbol)}
+    if required_extras and not required_extras.issubset(set(data["code"].astype(str))):
         return False
     min_symbols = max(3, min(request.max_symbols, 8))
     if data["code"].nunique() < min_symbols:
@@ -520,6 +535,41 @@ def _normalize_akshare_hist(raw: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFra
             "volume": pd.to_numeric(raw["成交量"], errors="coerce") * 100,
             "amount": pd.to_numeric(raw["成交额"], errors="coerce"),
             "turnover_rate": pd.to_numeric(raw["换手率"], errors="coerce"),
+            "money_flow": 0.0,
+            "pe_ttm": 25.0,
+            "roe": 0.08,
+            "net_profit_growth": 0.0,
+            "market_cap": 10_000_000_000.0,
+            "is_st": str(meta_row.get("name", "")).upper().find("ST") >= 0,
+            "list_days": list_days,
+            "suspended": False,
+        }
+    ).dropna(subset=["date", "close"])
+
+
+def _normalize_akshare_tx_hist(raw: pd.DataFrame, symbol: str, meta: pd.DataFrame) -> pd.DataFrame:
+    plain = _plain_symbol(symbol)
+    meta_row = meta.iloc[0].to_dict() if not meta.empty else known_stock_identity(plain)
+    listing_date = pd.to_datetime(meta_row.get("listing_date"), errors="coerce")
+    dates = pd.to_datetime(raw["date"], errors="coerce")
+    list_days = (dates - listing_date).dt.days if pd.notna(listing_date) else 9999
+    volume = pd.to_numeric(raw.get("amount", 0.0), errors="coerce") * 100
+    close = pd.to_numeric(raw["close"], errors="coerce")
+
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "code": _suffix_code(plain),
+            "name": meta_row.get("name", plain),
+            "industry": meta_row.get("industry", "未知"),
+            "board": meta_row.get("board", _board_from_symbol(plain)),
+            "open": pd.to_numeric(raw["open"], errors="coerce"),
+            "high": pd.to_numeric(raw["high"], errors="coerce"),
+            "low": pd.to_numeric(raw["low"], errors="coerce"),
+            "close": close,
+            "volume": volume,
+            "amount": volume * close,
+            "turnover_rate": 0.0,
             "money_flow": 0.0,
             "pe_ttm": 25.0,
             "roe": 0.08,
@@ -646,6 +696,12 @@ def _suffix_code(symbol: str) -> str:
     if symbol.startswith(("6", "9", "688")):
         return f"{symbol}.SH"
     return f"{symbol}.SZ"
+
+
+def _tx_symbol(symbol: str) -> str:
+    plain = _plain_symbol(symbol)
+    prefix = "sh" if _suffix_code(plain).endswith(".SH") else "sz"
+    return f"{prefix}{plain}"
 
 
 def known_stock_identity(symbol: str) -> dict[str, str]:

@@ -1,5 +1,14 @@
+import pandas as pd
+
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
-from a_share_recommender.data_providers import DataRequest, _cache_satisfies_request, _load_latest_provider_cache, known_stock_identity
+from a_share_recommender.data_providers import (
+    DataRequest,
+    _cache_satisfies_request,
+    _load_latest_provider_cache,
+    _normalize_akshare_tx_hist,
+    _tx_symbol,
+    known_stock_identity,
+)
 from a_share_recommender.data_providers import _core_fallback_universe, _filter_boards, _select_symbols_by_board
 from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
 from a_share_recommender.features import build_feature_frame
@@ -47,6 +56,28 @@ def test_known_stock_identity_for_baotong_technology():
     assert identity["code"] == "300031.SZ"
     assert identity["name"] == "宝通科技"
     assert identity["board"] == "创业板"
+
+
+def test_tx_symbol_and_normalization_for_baotong_technology():
+    assert _tx_symbol("300031") == "sz300031"
+    raw = pd.DataFrame(
+        {
+            "date": ["2026-06-12"],
+            "open": [25.94],
+            "close": [24.92],
+            "high": [26.02],
+            "low": [24.74],
+            "amount": [245369.0],
+        }
+    )
+    meta = pd.DataFrame([{"name": "宝通科技", "industry": "I 信息技术", "board": "创业板"}])
+    normalized = _normalize_akshare_tx_hist(raw, "300031", meta)
+    row = normalized.iloc[0]
+    assert row["code"] == "300031.SZ"
+    assert row["name"] == "宝通科技"
+    assert row["industry"] == "I 信息技术"
+    assert row["board"] == "创业板"
+    assert row["close"] == 24.92
 
 
 def test_stock_evaluation_for_existing_sample_stock():
