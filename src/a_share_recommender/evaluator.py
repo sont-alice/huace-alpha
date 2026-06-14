@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .config import StrategyConfig
+from .data_providers import known_stock_identity
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,13 @@ def evaluate_stock(
     latest = latest_scored.loc[latest_scored["code"] == code]
     history = market.loc[market["code"] == code].sort_values("date").copy()
     if latest.empty or history.empty:
+        identity = known_stock_identity(code)
+        if identity["name"] != code:
+            return _not_found(
+                code,
+                f"{identity['code']} 是 {identity['board']} 的 {identity['name']}，但当前数据集缺少它的行情。"
+                "这通常是 AKShare 在线接口连接失败且本地缓存未包含该股导致的；请勾选“忽略今日缓存并重新拉取”，或稍后网络恢复后重新评估。",
+            )
         return _not_found(code, "当前数据集中没有这只股票。请增大“真实数据股票数量”或确认代码是否正确。")
 
     row = latest.iloc[0]

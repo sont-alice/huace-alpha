@@ -39,6 +39,7 @@ CORE_A_SHARE_POOL = [
     "002714",
     "300014",
     "300015",
+    "300031",
     "300059",
     "300122",
     "300124",
@@ -122,6 +123,7 @@ CORE_A_SHARE_NAMES = {
     "002714": "牧原股份",
     "300014": "亿纬锂能",
     "300015": "爱尔眼科",
+    "300031": "宝通科技",
     "300059": "东方财富",
     "300122": "智飞生物",
     "300124": "汇川技术",
@@ -140,6 +142,8 @@ CORE_A_SHARE_NAMES = {
     "688169": "石头科技",
     "688256": "寒武纪",
 }
+
+KNOWN_A_SHARE_NAMES = CORE_A_SHARE_NAMES
 
 
 @dataclass(frozen=True)
@@ -642,6 +646,15 @@ def _suffix_code(symbol: str) -> str:
     if symbol.startswith(("6", "9", "688")):
         return f"{symbol}.SH"
     return f"{symbol}.SZ"
+
+
+def known_stock_identity(symbol: str) -> dict[str, str]:
+    plain = _plain_symbol(symbol)
+    return {
+        "code": _suffix_code(plain),
+        "name": KNOWN_A_SHARE_NAMES.get(plain, plain),
+        "board": _board_from_symbol(plain),
+    }
 
 
 def _board_from_symbol(symbol: str) -> str:

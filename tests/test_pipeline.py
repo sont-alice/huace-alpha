@@ -1,5 +1,5 @@
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
-from a_share_recommender.data_providers import DataRequest, _cache_satisfies_request, _load_latest_provider_cache
+from a_share_recommender.data_providers import DataRequest, _cache_satisfies_request, _load_latest_provider_cache, known_stock_identity
 from a_share_recommender.data_providers import _core_fallback_universe, _filter_boards, _select_symbols_by_board
 from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
 from a_share_recommender.features import build_feature_frame
@@ -42,6 +42,13 @@ def test_stock_code_normalization():
     assert normalize_stock_code("300750.SZ") == "300750.SZ"
 
 
+def test_known_stock_identity_for_baotong_technology():
+    identity = known_stock_identity("300031")
+    assert identity["code"] == "300031.SZ"
+    assert identity["name"] == "宝通科技"
+    assert identity["board"] == "创业板"
+
+
 def test_stock_evaluation_for_existing_sample_stock():
     config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
     result = run_pipeline(config, data_request=DataRequest(force_sample=True))
@@ -58,6 +65,17 @@ def test_stock_evaluation_for_missing_code():
     result = run_pipeline(config, data_request=DataRequest(force_sample=True))
     evaluation = evaluate_stock("999999", result.market, result.latest_scored, config, result.gate_ok)
     assert not evaluation.found
+
+
+def test_stock_evaluation_for_known_missing_stock_explains_missing_market_data():
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+    market = result.market[result.market["code"] != "300031.SZ"]
+    latest = result.latest_scored[result.latest_scored["code"] != "300031.SZ"]
+    evaluation = evaluate_stock("300031", market, latest, config, result.gate_ok)
+    assert not evaluation.found
+    assert "宝通科技" in evaluation.explanation
+    assert "缺少它的行情" in evaluation.explanation
 
 
 def test_industry_cap_fills_to_top_n_when_candidates_exist():
