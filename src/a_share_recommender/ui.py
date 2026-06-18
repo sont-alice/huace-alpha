@@ -11,7 +11,7 @@ from .pipeline import run_pipeline
 
 
 BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
-APP_STATE_VERSION = "full-market-ranking-v1"
+APP_STATE_VERSION = "large-pool-ranking-v1"
 
 
 def render_app() -> None:
@@ -49,17 +49,14 @@ def render_app() -> None:
             st.caption(f"将评估：{normalized_evaluation_code}")
 
         st.header("数据设置")
-        force_sample = st.checkbox("演示模式（不拉真实行情）", value=False)
-        prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False, disabled=force_sample)
-        tushare_token = st.text_input("Tushare token", type="password", disabled=force_sample)
-        boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS, disabled=force_sample)
-        full_market_scan = st.checkbox("全市场扫描排名（正式模式，较慢）", value=False, disabled=force_sample)
-        if full_market_scan and not force_sample:
-            st.caption("开启后将扫描所选板块的全部 A 股，并按综合评估从高到低输出；首次运行可能需要较长时间，系统会复用单股缓存。")
-        max_symbols = st.slider("真实数据股票数量", 5, 80, 30, 5, disabled=force_sample or full_market_scan)
-        history_years = st.slider("历史数据年限", 2, 6, 4, 1, disabled=force_sample)
-        use_finance = st.checkbox("启用财务增强（较慢）", value=True, disabled=force_sample)
-        force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False, disabled=force_sample)
+        prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
+        tushare_token = st.text_input("Tushare token", type="password")
+        boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS)
+        st.caption("推荐列表使用真实数据大池排名：最多扫描 300 只股票，并按综合评估从高到低输出。")
+        max_symbols = st.slider("真实数据股票数量", 20, 300, 300, 10)
+        history_years = st.slider("历史数据年限", 2, 6, 4, 1)
+        use_finance = st.checkbox("启用财务增强（较慢）", value=True)
+        force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False)
         run = st.button("生成今日推荐", type="primary", use_container_width=True)
         evaluate_only = st.button("评估输入股票", use_container_width=True)
 
@@ -69,17 +66,17 @@ def render_app() -> None:
         min_amount=float(min_amount),
         transaction_cost=float(transaction_cost),
     )
-    extra_symbols = (normalized_evaluation_code,) if normalized_evaluation_code and not force_sample else ()
+    extra_symbols = (normalized_evaluation_code,) if normalized_evaluation_code else ()
     data_request = DataRequest(
         max_symbols=max_symbols,
         history_years=history_years,
         use_finance=use_finance,
-        force_sample=force_sample,
+        force_sample=False,
         force_refresh=force_refresh,
-        allow_sample_fallback=force_sample,
+        allow_sample_fallback=False,
         extra_symbols=extra_symbols,
         boards=tuple(boards or BOARD_OPTIONS),
-        full_market_scan=full_market_scan and not force_sample,
+        full_market_scan=True,
     )
 
     cache_key = (
@@ -94,9 +91,7 @@ def render_app() -> None:
         max_symbols,
         history_years,
         use_finance,
-        force_sample,
         force_refresh,
-        full_market_scan,
     )
     if st.session_state.get("cache_key") != cache_key:
         st.session_state.pop("result", None)
@@ -119,10 +114,10 @@ def render_app() -> None:
                 st.session_state["run_error"] = str(exc)
 
     if "result" not in st.session_state:
-        _render_landing(evaluation_code, force_sample)
+        _render_landing(evaluation_code)
         if "run_error" in st.session_state:
             st.error(st.session_state["run_error"])
-            st.info("真实数据失败时不会展示样例推荐。可以点击“忽略今日缓存并重新拉取”，或主动开启“演示模式”查看界面流程。")
+            st.info("真实数据失败时不会生成推荐结果。可以点击“忽略今日缓存并重新拉取”，或稍后等待 AKShare/Tushare 接口恢复。")
         return
 
     result = st.session_state["result"]
@@ -142,15 +137,12 @@ def render_app() -> None:
 
     with tab_rec:
         st.subheader("推荐列表")
-        if data_request.full_market_scan:
-            st.caption("当前为全市场扫描口径：候选股来自所选板块全部可交易股票，并严格按综合评估从高到低排列。")
-        else:
-            st.caption("当前为快速抽样口径：候选股来自抽样股票池，并启用板块/行业分散约束。正式推荐请开启左侧全市场扫描。")
+        st.caption("当前为真实数据大池排名口径：候选股来自所选板块最多 300 只股票，并严格按综合评估从高到低排列。")
         st.dataframe(
             result.recommendations,
             use_container_width=True,
             column_config={
-                "market_rank": st.column_config.NumberColumn("全市场排名", format="%d"),
+                "market_rank": st.column_config.NumberColumn("大池排名", format="%d"),
                 "rating": st.column_config.TextColumn("候选等级"),
                 "action": st.column_config.TextColumn("动作"),
                 "win_probability": st.column_config.ProgressColumn("胜率评分", min_value=0, max_value=1, format="percent"),
@@ -292,7 +284,7 @@ def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
     st.markdown(html, unsafe_allow_html=True)
 
 
-def _render_landing(evaluation_code: str, force_sample: bool) -> None:
+def _render_landing(evaluation_code: str) -> None:
     st.markdown(
         """
         <div class="landing-grid">
@@ -306,14 +298,14 @@ def _render_landing(evaluation_code: str, force_sample: bool) -> None:
           </div>
           <div class="landing-card">
             <div class="card-title">数据纪律</div>
-            <div class="card-copy">默认只展示真实数据结果。公开接口失败时不自动混入样例推荐；只有主动开启演示模式才使用样例数据。</div>
+            <div class="card-copy">系统只展示真实数据结果。公开接口失败时不生成推荐结果；请等待接口恢复、使用 Tushare token，或重新拉取缓存。</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
     next_step = "已输入代码，点击左侧“评估输入股票”开始。" if evaluation_code.strip() else "可先输入股票代码，或直接生成今日推荐。"
-    mode = "当前为演示模式，会使用样例数据。" if force_sample else "当前为真实数据模式。"
+    mode = "当前为真实数据模式。"
     st.markdown(f'<div class="data-banner">{mode} {next_step}</div>', unsafe_allow_html=True)
 
 

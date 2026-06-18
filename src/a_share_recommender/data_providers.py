@@ -155,7 +155,7 @@ class ProviderStatus:
 
 @dataclass(frozen=True)
 class DataRequest:
-    max_symbols: int = 30
+    max_symbols: int = 300
     history_years: int = 4
     use_finance: bool = True
     force_sample: bool = False
@@ -468,7 +468,7 @@ def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
 
 def _min_symbols_for_request(request: DataRequest) -> int:
     if request.full_market_scan:
-        return 300
+        return max(8, min(request.max_symbols, 100))
     return max(3, min(request.max_symbols, 8))
 
 
@@ -476,7 +476,7 @@ def _assert_full_market_universe(universe: pd.DataFrame, request: DataRequest, c
     if not request.full_market_scan:
         return
     if universe.empty or code_column not in universe.columns or universe[code_column].nunique() < 1000:
-        raise RuntimeError("全市场扫描需要完整 A 股股票列表；当前数据源只返回了过少股票，不能作为全市场推荐依据。请稍后重试、使用 Tushare token，或关闭全市场扫描改用快速抽样。")
+        raise RuntimeError("大池排名需要完整 A 股股票列表；当前数据源只返回了过少股票，不能作为推荐依据。请稍后重试、使用 Tushare token，或降低真实数据股票数量后重新运行。")
 
 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
@@ -829,10 +829,7 @@ def _select_symbols_by_board(universe: pd.DataFrame, max_symbols: int, boards: t
 def _select_request_symbols(universe: pd.DataFrame, request: DataRequest) -> list[str]:
     if universe.empty:
         return _merge_symbols([], request.extra_symbols)
-    if request.full_market_scan:
-        base = universe["code"].astype(str).tolist()
-    else:
-        base = _select_symbols_by_board(universe, request.max_symbols, request.boards)
+    base = _select_symbols_by_board(universe, request.max_symbols, request.boards)
     return _merge_symbols(base, request.extra_symbols)
 
 

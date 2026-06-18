@@ -158,19 +158,19 @@ def test_narrow_cache_does_not_satisfy_multi_board_request():
     assert not _cache_satisfies_request(data, DataRequest(max_symbols=30))
 
 
-def test_full_market_request_selects_all_filtered_symbols():
+def test_large_pool_request_limits_filtered_symbols():
     universe = _core_fallback_universe()
     boards = ("深证主板", "创业板")
     filtered = _filter_boards(universe, boards)
     request = DataRequest(max_symbols=5, boards=boards, full_market_scan=True)
     selected = _select_request_symbols(filtered, request)
-    assert len(selected) == filtered["code"].nunique()
-    assert len(selected) > request.max_symbols
+    assert len(selected) == request.max_symbols
+    assert len(selected) < filtered["code"].nunique()
 
 
 def test_full_market_rejects_core_only_universe():
     request = DataRequest(full_market_scan=True)
-    with pytest.raises(RuntimeError, match="全市场扫描需要完整"):
+    with pytest.raises(RuntimeError, match="大池排名需要完整"):
         _assert_full_market_universe(_core_fallback_universe(), request, "code")
 
 
