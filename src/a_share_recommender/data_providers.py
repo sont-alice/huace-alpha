@@ -155,7 +155,7 @@ class ProviderStatus:
 
 @dataclass(frozen=True)
 class DataRequest:
-    max_symbols: int = 300
+    max_symbols: int = 800
     history_years: int = 4
     use_finance: bool = True
     force_sample: bool = False

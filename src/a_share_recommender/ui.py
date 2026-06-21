@@ -52,8 +52,8 @@ def render_app() -> None:
         prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
         tushare_token = st.text_input("Tushare token", type="password")
         boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS)
-        st.caption("推荐列表使用真实数据大池排名：最多扫描 300 只股票，并按综合评估从高到低输出。")
-        max_symbols = st.slider("真实数据股票数量", 20, 300, 300, 10)
+        st.caption("推荐列表使用真实数据大池排名：最多扫描 800 只股票，并按综合评估从高到低输出。")
+        max_symbols = st.slider("真实数据股票数量", 20, 800, 800, 20)
         history_years = st.slider("历史数据年限", 2, 6, 4, 1)
         use_finance = st.checkbox("启用财务增强（较慢）", value=True)
         force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False)
@@ -137,7 +137,7 @@ def render_app() -> None:
 
     with tab_rec:
         st.subheader("推荐列表")
-        st.caption("当前为真实数据大池排名口径：候选股来自所选板块最多 300 只股票，并严格按综合评估从高到低排列。")
+        st.caption("当前为真实数据大池排名口径：候选股来自所选板块最多 800 只股票，并严格按综合评估从高到低排列。")
         st.dataframe(
             result.recommendations,
             use_container_width=True,
