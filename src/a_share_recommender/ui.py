@@ -156,7 +156,7 @@ def render_app() -> None:
                 "board": st.column_config.TextColumn("市场板块"),
                 "score_rank": st.column_config.ProgressColumn("分位", min_value=0, max_value=1),
                 "close": st.column_config.NumberColumn("收盘价", format="%.2f"),
-                "position_limit": st.column_config.NumberColumn("仓位上限", format="%.1%"),
+                "position_limit": st.column_config.NumberColumn("仓位上限", format="percent"),
                 "stop_loss": st.column_config.NumberColumn("止损价", format="%.2f"),
             },
         )

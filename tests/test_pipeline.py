@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -208,3 +210,8 @@ def test_full_market_recommendations_keep_score_order():
 
     assert recommendations["composite_score"].tolist() == sorted(recommendations["composite_score"], reverse=True)
     assert recommendations["market_rank"].tolist() == [1, 2, 3, 4, 5]
+
+
+def test_ui_does_not_use_invalid_percent_sprintf_format():
+    ui_source = Path("src/a_share_recommender/ui.py").read_text(encoding="utf-8")
+    assert 'format="%.1%"' not in ui_source
