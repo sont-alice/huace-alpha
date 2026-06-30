@@ -8,6 +8,7 @@ from a_share_recommender.data_providers import (
     DataRequest,
     _cache_satisfies_request,
     _load_latest_provider_cache,
+    _merge_missing_symbol_history,
     _normalize_akshare_tx_hist,
     _assert_full_market_universe,
     _select_request_symbols,
@@ -16,7 +17,7 @@ from a_share_recommender.data_providers import (
 )
 from a_share_recommender.data_providers import _core_fallback_universe, _filter_boards, _select_symbols_by_board
 from a_share_recommender.evaluator import evaluate_stock, normalize_stock_code
-from a_share_recommender.features import build_feature_frame
+from a_share_recommender.features import build_feature_frame, latest_features
 from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
 from a_share_recommender.backtest import _cap_industry
@@ -39,6 +40,19 @@ def test_future_return_uses_same_stock_future_close():
     current_idx = code_prices.index[code_prices["date"] == row["date"]][0]
     expected = code_prices.loc[current_idx + 20, "close"] / code_prices.loc[current_idx, "close"] - 1
     assert abs(row["future_return"] - expected) < 1e-12
+
+
+def test_latest_features_keeps_each_stocks_latest_available_date():
+    market = make_sample_market(n_stocks=3, n_days=180)
+    missing_code = market["code"].drop_duplicates().iloc[-1]
+    latest_date = market["date"].max()
+    market = market[~((market["code"] == missing_code) & (market["date"] == latest_date))]
+    features = build_feature_frame(market, horizon_days=20)
+
+    latest = latest_features(features)
+
+    assert latest["code"].nunique() == market["code"].nunique()
+    assert latest.loc[latest["code"] == missing_code, "date"].iloc[0] < latest_date
 
 
 def test_pipeline_returns_recommendations_and_metrics():
@@ -159,6 +173,17 @@ def test_narrow_cache_does_not_satisfy_multi_board_request():
     data = make_sample_market(n_stocks=3, n_days=40)
     data["board"] = "深证主板"
     assert not _cache_satisfies_request(data, DataRequest(max_symbols=30))
+
+
+def test_failed_symbols_are_filled_from_latest_real_history():
+    stale = make_sample_market(n_stocks=3, n_days=40)
+    codes = stale["code"].drop_duplicates().tolist()
+    current = stale[stale["code"] == codes[0]].copy()
+
+    merged, filled = _merge_missing_symbol_history(current, stale, [code.split(".")[0] for code in codes])
+
+    assert filled == 2
+    assert set(merged["code"]) == set(codes)
 
 
 def test_large_pool_request_limits_filtered_symbols():

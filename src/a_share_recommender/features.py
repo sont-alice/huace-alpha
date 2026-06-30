@@ -53,6 +53,5 @@ def build_feature_frame(market: pd.DataFrame, horizon_days: int) -> pd.DataFrame
 
 
 def latest_features(features: pd.DataFrame) -> pd.DataFrame:
-    max_date = features["date"].max()
-    latest = features.loc[features["date"] == max_date].copy()
+    latest = features.sort_values(["code", "date"]).groupby("code", as_index=False).tail(1).copy()
     return latest.dropna(subset=FEATURE_COLUMNS, how="all")

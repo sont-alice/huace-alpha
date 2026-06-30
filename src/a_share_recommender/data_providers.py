@@ -242,6 +242,11 @@ class AkshareProvider:
             raise RuntimeError("AKShare 日线接口未返回可用数据：" + "；".join(errors[:5]))
 
         data = pd.concat(frames, ignore_index=True)
+        stale_fill_count = 0
+        if errors:
+            stale = _load_latest_provider_cache(self.cache_dir, "akshare", request)
+            if stale is not None:
+                data, stale_fill_count = _merge_missing_symbol_history(data, stale, symbols)
         if request.use_finance:
             data = _attach_akshare_finance(ak, data, symbols[: min(len(symbols), 30)])
 
@@ -249,6 +254,8 @@ class AkshareProvider:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         data.to_parquet(cache_path, index=False)
         suffix = f"；失败 {len(errors)} 只" if errors else ""
+        if stale_fill_count:
+            suffix += f"；其中 {stale_fill_count} 只使用最近真实历史补齐"
         return data, ProviderStatus("akshare", f"使用 AKShare 真实日线/行业/财务数据{suffix}", len(data))
 
 
@@ -279,6 +286,22 @@ def _load_one_akshare_symbol(
         return None
     _save_symbol_cache(symbol_cache, normalized)
     return normalized
+
+
+def _merge_missing_symbol_history(
+    current: pd.DataFrame,
+    stale: pd.DataFrame,
+    symbols: list[str],
+) -> tuple[pd.DataFrame, int]:
+    requested_codes = {_suffix_code(symbol) for symbol in symbols}
+    current_codes = set(current["code"].astype(str))
+    missing_codes = requested_codes - current_codes
+    fallback = stale[stale["code"].astype(str).isin(missing_codes)].copy()
+    if fallback.empty:
+        return current, 0
+    merged = pd.concat([current, fallback], ignore_index=True)
+    merged = merged.drop_duplicates(["date", "code"], keep="first")
+    return merged, int(fallback["code"].nunique())
 
 
 class TushareProvider:

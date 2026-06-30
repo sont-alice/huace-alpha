@@ -45,6 +45,7 @@ def run_pipeline(
 
     latest = latest_features(features)
     latest_scored = enrich_scores(score_frame(model_result.model, latest), config)
+    latest_scored["score_rank"] = latest_scored["score"].rank(pct=True)
     recommendations = make_recommendations(latest_scored, config, gate_ok, strict_rank=data_request.full_market_scan)
     return PipelineResult(
         provider_status=status,
