@@ -21,6 +21,7 @@ from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
 from a_share_recommender.backtest import _cap_industry
 from a_share_recommender.recommend import _cap_board, make_recommendations
+from a_share_recommender.snapshot import load_snapshot, write_snapshot
 
 
 def test_feature_frame_has_expected_columns():
@@ -215,3 +216,31 @@ def test_full_market_recommendations_keep_score_order():
 def test_ui_does_not_use_invalid_percent_sprintf_format():
     ui_source = Path("src/a_share_recommender/ui.py").read_text(encoding="utf-8")
     assert 'format="%.1%"' not in ui_source
+
+
+def test_snapshot_round_trip_preserves_public_result(tmp_path):
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+    destination = write_snapshot(result, tmp_path / "snapshot", config)
+
+    loaded = load_snapshot(destination)
+
+    assert loaded.provider_status.mode.startswith("snapshot-")
+    assert loaded.data_date == result.data_date
+    assert loaded.gate_ok == result.gate_ok
+    assert loaded.metrics == result.metrics
+    expected_codes = result.recommendations.sort_values("composite_score", ascending=False)["code"].tolist()
+    assert loaded.recommendations["code"].tolist() == expected_codes
+    assert loaded.recommendations["composite_score"].is_monotonic_decreasing
+    assert loaded.market["code"].nunique() == result.market["code"].nunique()
+
+
+def test_snapshot_rejects_modified_file(tmp_path):
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+    destination = write_snapshot(result, tmp_path / "snapshot", config)
+    with (destination / "result.json").open("a", encoding="utf-8") as handle:
+        handle.write(" ")
+
+    with pytest.raises(RuntimeError, match="校验失败"):
+        load_snapshot(destination)

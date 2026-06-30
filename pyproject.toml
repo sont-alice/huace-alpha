@@ -12,6 +12,7 @@ dependencies = [
   "streamlit",
   "akshare",
   "tushare",
+  "huggingface-hub",
 ]
 
 [project.optional-dependencies]

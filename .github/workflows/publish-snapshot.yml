@@ -1,0 +1,33 @@
+name: Publish daily A-share snapshot
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 10 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-a-share-snapshot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SNAPSHOT_REPO_ID: ${{ vars.HF_SNAPSHOT_REPO_ID }}
+      TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+      DATA_FETCH_WORKERS: "12"
+      TQDM_DISABLE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Build and publish verified snapshot
+        run: python scripts/build_snapshot.py --output data/snapshot --max-symbols 800 --history-years 4 --force-refresh --publish

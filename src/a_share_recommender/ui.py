@@ -8,6 +8,7 @@ from .config import StrategyConfig
 from .data_providers import DataRequest
 from .evaluator import evaluate_stock, normalize_stock_code
 from .pipeline import run_pipeline
+from .snapshot import load_configured_snapshot, public_snapshot_mode
 
 
 BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
@@ -35,12 +36,15 @@ def render_app() -> None:
         unsafe_allow_html=True,
     )
 
+    public_mode = public_snapshot_mode()
     with st.sidebar:
         st.header("策略设置")
-        horizon = st.slider("目标持有期（交易日）", 20, 40, 30, 5)
+        horizon = 30 if public_mode else st.slider("目标持有期（交易日）", 20, 40, 30, 5)
         top_n = st.slider("推荐数量上限", 3, 20, 10)
-        min_amount = st.number_input("20日平均成交额下限（万元）", 1000, 100000, 8000, 1000) * 10000
-        transaction_cost = st.number_input("单轮交易成本", 0.0, 0.02, 0.003, 0.001, format="%.3f")
+        min_amount = 80_000_000 if public_mode else st.number_input("20日平均成交额下限（万元）", 1000, 100000, 8000, 1000) * 10000
+        transaction_cost = 0.003 if public_mode else st.number_input("单轮交易成本", 0.0, 0.02, 0.003, 0.001, format="%.3f")
+        if public_mode:
+            st.caption("公网版使用每日收盘后生成的共享模型快照。")
 
         st.header("个股评估")
         evaluation_code = st.text_input("股票代码", value="", placeholder="例如 000001 或 600519")
@@ -48,16 +52,26 @@ def render_app() -> None:
         if evaluation_code and normalized_evaluation_code:
             st.caption(f"将评估：{normalized_evaluation_code}")
 
-        st.header("数据设置")
-        prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
-        tushare_token = st.text_input("Tushare token", type="password")
-        boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS)
-        st.caption("推荐列表使用真实数据大池排名：最多扫描 800 只股票，并按综合评估从高到低输出。")
-        max_symbols = st.slider("真实数据股票数量", 20, 800, 800, 20)
-        history_years = st.slider("历史数据年限", 2, 6, 4, 1)
-        use_finance = st.checkbox("启用财务增强（较慢）", value=True)
-        force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False)
-        run = st.button("生成今日推荐", type="primary", use_container_width=True)
+        if public_mode:
+            prefer_tushare = False
+            tushare_token = ""
+            boards = BOARD_OPTIONS
+            max_symbols = 800
+            history_years = 4
+            use_finance = True
+            force_refresh = False
+            run = st.button("查看最新推荐", type="primary", use_container_width=True)
+        else:
+            st.header("数据设置")
+            prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
+            tushare_token = st.text_input("Tushare token", type="password")
+            boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS)
+            st.caption("推荐列表使用真实数据大池排名：最多扫描 800 只股票，并按综合评估从高到低输出。")
+            max_symbols = st.slider("真实数据股票数量", 20, 800, 800, 20)
+            history_years = st.slider("历史数据年限", 2, 6, 4, 1)
+            use_finance = st.checkbox("启用财务增强（较慢）", value=True)
+            force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False)
+            run = st.button("生成今日推荐", type="primary", use_container_width=True)
         evaluate_only = st.button("评估输入股票", use_container_width=True)
 
     config = StrategyConfig(
@@ -100,21 +114,25 @@ def render_app() -> None:
 
     requested_run = run or evaluate_only
     if requested_run:
-        with st.spinner("正在更新数据、训练模型并回测。真实数据首次拉取可能需要数分钟..."):
+        spinner_text = "正在读取最新共享快照..." if public_mode else "正在更新数据、训练模型并回测。真实数据首次拉取可能需要数分钟..."
+        with st.spinner(spinner_text):
             try:
-                st.session_state["result"] = run_pipeline(
-                    config,
-                    prefer_tushare=prefer_tushare,
-                    tushare_token=tushare_token or None,
-                    data_request=data_request,
-                )
+                if public_mode:
+                    st.session_state["result"] = _cached_public_snapshot()
+                else:
+                    st.session_state["result"] = run_pipeline(
+                        config,
+                        prefer_tushare=prefer_tushare,
+                        tushare_token=tushare_token or None,
+                        data_request=data_request,
+                    )
                 st.session_state.pop("run_error", None)
             except Exception as exc:
                 st.session_state.pop("result", None)
                 st.session_state["run_error"] = str(exc)
 
     if "result" not in st.session_state:
-        _render_landing(evaluation_code)
+        _render_landing(evaluation_code, public_mode)
         if "run_error" in st.session_state:
             st.error(st.session_state["run_error"])
             st.info("真实数据失败时不会生成推荐结果。可以点击“忽略今日缓存并重新拉取”，或稍后等待 AKShare/Tushare 接口恢复。")
@@ -122,7 +140,8 @@ def render_app() -> None:
 
     result = st.session_state["result"]
     market_regime = _latest_market_regime(result)
-    buy_count = int((result.recommendations["action"] == "买入观察").sum()) if not result.recommendations.empty else 0
+    displayed_recommendations = result.recommendations.head(top_n)
+    buy_count = int((displayed_recommendations["action"] == "买入观察").sum()) if not displayed_recommendations.empty else 0
     _render_health_panel(result, market_regime, buy_count)
 
     cols = st.columns(6)
@@ -139,7 +158,7 @@ def render_app() -> None:
         st.subheader("推荐列表")
         st.caption("当前为真实数据大池排名口径：候选股来自所选板块最多 800 只股票，并严格按综合评估从高到低排列。")
         st.dataframe(
-            result.recommendations,
+            displayed_recommendations,
             use_container_width=True,
             column_config={
                 "market_rank": st.column_config.NumberColumn("大池排名", format="%d"),
@@ -162,7 +181,7 @@ def render_app() -> None:
         )
         st.download_button(
             "导出推荐 CSV",
-            result.recommendations.to_csv(index=False).encode("utf-8-sig"),
+            displayed_recommendations.to_csv(index=False).encode("utf-8-sig"),
             file_name="a_share_recommendations.csv",
             mime="text/csv",
         )
@@ -242,7 +261,16 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
 
 
 def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
-    if result.provider_status.mode == "akshare-stale-cache":
+    snapshot_age = (pd.Timestamp.now().normalize() - result.data_date.normalize()).days
+    if result.provider_status.mode.startswith("snapshot-") and snapshot_age > 3:
+        data_title = "数据状态：共享快照已过期"
+        data_body = f"当前快照数据日期为 {result.data_date:%Y-%m-%d}，距今 {snapshot_age} 天。系统已保留最近一次成功结果，请等待自动更新。"
+        data_class = "health-warn"
+    elif result.provider_status.mode.startswith("snapshot-"):
+        data_title = "数据状态：共享快照可用"
+        data_body = f"当前使用每日预计算的真实数据快照，数据日期：{result.data_date:%Y-%m-%d}。"
+        data_class = "health-ok"
+    elif result.provider_status.mode == "akshare-stale-cache":
         data_title = "数据状态：使用最近交易日缓存"
         data_body = f"在线接口暂不可用，系统已使用真实历史缓存继续运行。当前数据日期：{result.data_date:%Y-%m-%d}。如需刷新，稍后勾选“忽略今日缓存并重新拉取”。"
         data_class = "health-warn"
@@ -284,17 +312,27 @@ def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
     st.markdown(html, unsafe_allow_html=True)
 
 
-def _render_landing(evaluation_code: str) -> None:
+def _render_landing(evaluation_code: str, public_mode: bool = False) -> None:
+    recommendation_copy = (
+        "点击左侧“查看最新推荐”。系统直接读取每日收盘后生成的 800 股共享快照。"
+        if public_mode
+        else "选择市场板块和数据源后，点击左侧“生成今日推荐”。系统会拉取真实行情、训练集成模型并输出经过风控过滤的候选清单。"
+    )
+    evaluation_copy = (
+        "输入股票代码后点击“评估输入股票”。系统使用共享快照展示评级、胜率评分、趋势、基本面和风险解释。"
+        if public_mode
+        else "输入股票代码后点击“评估输入股票”。系统会强制拉取该股票，展示评级、胜率评分、趋势、基本面和风险解释。"
+    )
     st.markdown(
-        """
+        f"""
         <div class="landing-grid">
           <div class="landing-card">
             <div class="card-title">今日工作台</div>
-            <div class="card-copy">选择市场板块和数据源后，点击左侧“生成今日推荐”。系统会拉取真实行情、训练集成模型并输出经过风控过滤的候选清单。</div>
+            <div class="card-copy">{recommendation_copy}</div>
           </div>
           <div class="landing-card">
             <div class="card-title">个股评估</div>
-            <div class="card-copy">输入股票代码后点击“评估输入股票”。系统会强制拉取该股票，展示评级、胜率评分、趋势、基本面和风险解释。</div>
+            <div class="card-copy">{evaluation_copy}</div>
           </div>
           <div class="landing-card">
             <div class="card-title">数据纪律</div>
@@ -307,6 +345,11 @@ def _render_landing(evaluation_code: str) -> None:
     next_step = "已输入代码，点击左侧“评估输入股票”开始。" if evaluation_code.strip() else "可先输入股票代码，或直接生成今日推荐。"
     mode = "当前为真实数据模式。"
     st.markdown(f'<div class="data-banner">{mode} {next_step}</div>', unsafe_allow_html=True)
+
+
+@st.cache_resource(show_spinner=False, ttl=900)
+def _cached_public_snapshot():
+    return load_configured_snapshot()
 
 
 def _signals_to_frame(signals: dict[str, float]) -> pd.DataFrame:

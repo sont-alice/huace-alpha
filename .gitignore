@@ -5,11 +5,12 @@ venv/
 data/cache/
 data/raw/
 data/processed/
+data/snapshot/
 outputs/
+.tmp_public_snapshot/
 *.pyc
 *.log
 *.db
 *.sqlite
 *.parquet
 *.env
-

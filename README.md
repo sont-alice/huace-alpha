@@ -1,3 +1,11 @@
+---
+title: Huace Alpha Research
+sdk: docker
+app_port: 8501
+pinned: false
+license: mit
+---
+
 # A 股波段预测推荐软件
 
 本项目是一个本地 Web 投研工具，用于 A 股 2-6 周波段推荐研究。系统先拉取真实行情，构建技术面、资金面、行业和基本面特征，再训练模型、回测验证，并输出按综合评估从高到低排列的候选清单。
@@ -35,6 +43,35 @@ streamlit run app.py
 ```powershell
 pytest
 ```
+
+## 公网部署
+
+公网版使用 Hugging Face Docker Space 运行，只读取已验证的每日快照，不会因为访客点击而重新训练 800 股模型。
+
+生成本地快照：
+
+```powershell
+python scripts/build_snapshot.py --output data/snapshot --max-symbols 800
+```
+
+使用本地快照测试公网模式：
+
+```powershell
+$env:PUBLIC_SNAPSHOT_MODE = "true"
+$env:SNAPSHOT_DIR = "data/snapshot"
+streamlit run app.py
+```
+
+Docker 启动：
+
+```powershell
+docker build -t huace-alpha .
+docker run --rm -p 8501:8501 `
+  -e HF_SNAPSHOT_REPO_ID="<account>/<dataset>" `
+  huace-alpha
+```
+
+Hugging Face Space 需要设置变量 `HF_SNAPSHOT_REPO_ID`。GitHub Actions 需要设置同名 Repository Variable，并将可写入 Dataset 仓库的 token 保存为 `HF_TOKEN` Secret。`TUSHARE_TOKEN` 是可选 Secret。
 
 ## 重要说明
 

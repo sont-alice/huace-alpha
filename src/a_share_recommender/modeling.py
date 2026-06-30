@@ -6,13 +6,14 @@ import pandas as pd
 from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor, VotingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
+from typing import Any
 
 from .config import FEATURE_COLUMNS
 
 
 @dataclass
 class ModelResult:
-    model: Pipeline
+    model: Pipeline | Any | None
     train_rows: int
     test_rows: int
     train_end: pd.Timestamp

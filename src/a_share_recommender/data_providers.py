@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from importlib.util import find_spec
 from pathlib import Path
 import hashlib
+import os
 import time
 
 import numpy as np
@@ -206,31 +208,31 @@ class AkshareProvider:
 
         frames = []
         errors: list[str] = []
-        for symbol in symbols:
-            try:
-                meta = full_universe.loc[full_universe["code"] == symbol].head(1)
-                symbol_cache = _symbol_cache_path(self.cache_dir, "akshare", symbol, start_date, end_date)
-                cached = _load_symbol_cache(symbol_cache, request.force_refresh)
-                if cached is not None:
-                    frames.append(cached)
-                    continue
-
-                raw, source = _load_akshare_hist_with_retry(ak, symbol, start_date, end_date)
-                if raw.empty:
-                    errors.append(f"{symbol}:Empty")
-                    continue
-                if source == "tx":
-                    normalized = _normalize_akshare_tx_hist(raw, symbol, meta)
-                else:
-                    normalized = _normalize_akshare_hist(raw, meta)
-                if normalized.empty:
-                    errors.append(f"{symbol}:Empty")
-                    continue
-                _save_symbol_cache(symbol_cache, normalized)
-                frames.append(normalized)
-                time.sleep(0.15)
-            except Exception as exc:
-                errors.append(f"{symbol}:{type(exc).__name__}")
+        workers = max(1, min(int(os.getenv("DATA_FETCH_WORKERS", "8")), 12, len(symbols)))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="akshare") as executor:
+            futures = {
+                executor.submit(
+                    _load_one_akshare_symbol,
+                    ak,
+                    self.cache_dir,
+                    full_universe,
+                    symbol,
+                    start_date,
+                    end_date,
+                    request.force_refresh,
+                ): symbol
+                for symbol in symbols
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    frame = future.result()
+                    if frame is None or frame.empty:
+                        errors.append(f"{symbol}:Empty")
+                    else:
+                        frames.append(frame)
+                except Exception as exc:
+                    errors.append(f"{symbol}:{type(exc).__name__}")
 
         if not frames:
             stale = _load_latest_provider_cache(self.cache_dir, "akshare", request)
@@ -248,6 +250,35 @@ class AkshareProvider:
         data.to_parquet(cache_path, index=False)
         suffix = f"；失败 {len(errors)} 只" if errors else ""
         return data, ProviderStatus("akshare", f"使用 AKShare 真实日线/行业/财务数据{suffix}", len(data))
+
+
+def _load_one_akshare_symbol(
+    ak,
+    cache_dir: Path,
+    full_universe: pd.DataFrame,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    force_refresh: bool,
+) -> pd.DataFrame | None:
+    meta = full_universe.loc[full_universe["code"] == symbol].head(1)
+    symbol_cache = _symbol_cache_path(cache_dir, "akshare", symbol, start_date, end_date)
+    cached = _load_symbol_cache(symbol_cache, force_refresh)
+    if cached is not None:
+        return cached
+
+    raw, source = _load_akshare_hist_with_retry(ak, symbol, start_date, end_date)
+    if raw.empty:
+        return None
+    normalized = (
+        _normalize_akshare_tx_hist(raw, symbol, meta)
+        if source == "tx"
+        else _normalize_akshare_hist(raw, meta)
+    )
+    if normalized.empty:
+        return None
+    _save_symbol_cache(symbol_cache, normalized)
+    return normalized
 
 
 class TushareProvider:
