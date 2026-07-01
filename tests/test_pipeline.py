@@ -13,6 +13,8 @@ from a_share_recommender.data_providers import (
     _normalize_akshare_tx_hist,
     _assert_full_market_universe,
     _select_request_symbols,
+    _suffix_code,
+    _symbols_from_baseline,
     _tx_symbol,
     known_stock_identity,
 )
@@ -215,6 +217,15 @@ def test_incremental_refresh_keeps_baseline_history_and_prefers_current_rows():
     latest = merged[merged["code"] == codes[0]].sort_values("date").iloc[-1]
     assert latest["close"] == 999.0
     assert len(merged[merged["code"] == codes[0]]) == 40
+
+
+def test_existing_full_market_baseline_keeps_its_stock_membership():
+    baseline = make_sample_market(n_stocks=12, n_days=40)
+    request = DataRequest(max_symbols=12, full_market_scan=True)
+
+    symbols = _symbols_from_baseline(baseline, request)
+
+    assert {_suffix_code(symbol) for symbol in symbols} == set(baseline["code"].unique())
 
 
 def test_large_pool_request_limits_filtered_symbols():

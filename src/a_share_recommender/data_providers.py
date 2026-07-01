@@ -199,14 +199,17 @@ class AkshareProvider:
 
         full_universe = _akshare_universe(ak, self.cache_dir, request.force_refresh)
         _assert_full_market_universe(full_universe, request, "code")
-        universe = _filter_boards(full_universe, request.boards)
-        symbols = _select_request_symbols(universe, request)
-        if not symbols:
-            symbols = CORE_A_SHARE_POOL[: request.max_symbols]
+        baseline = _load_latest_provider_cache(self.cache_dir, "akshare", request)
+        if baseline is not None:
+            symbols = _symbols_from_baseline(baseline, request)
+        else:
+            universe = _filter_boards(full_universe, request.boards)
+            symbols = _select_request_symbols(universe, request)
+            if not symbols:
+                symbols = CORE_A_SHARE_POOL[: request.max_symbols]
 
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
-        baseline = _load_latest_provider_cache(self.cache_dir, "akshare", request)
         fetch_start_date = start_date
         if baseline is not None and baseline["code"].nunique() >= request.max_symbols:
             baseline_max_date = pd.Timestamp(baseline["date"].max())
@@ -321,6 +324,15 @@ def _merge_refreshed_with_baseline(
     merged = pd.concat([current, baseline_requested], ignore_index=True)
     merged = merged.drop_duplicates(["date", "code"], keep="first")
     return merged, len(filled_codes)
+
+
+def _symbols_from_baseline(baseline: pd.DataFrame, request: DataRequest) -> list[str]:
+    latest = baseline.sort_values("date").groupby("code", as_index=False).tail(1)
+    if request.boards and "全市场" not in request.boards and "board" in latest.columns:
+        latest = latest[latest["board"].isin(request.boards)]
+    base = latest.sort_values(["board", "code"] if "board" in latest.columns else ["code"])
+    symbols = base["code"].map(_plain_symbol).head(request.max_symbols).tolist()
+    return _merge_symbols(symbols, request.extra_symbols)
 
 
 class TushareProvider:
