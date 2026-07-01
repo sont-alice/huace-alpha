@@ -15,7 +15,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 360
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_SNAPSHOT_REPO_ID: ${{ vars.HF_SNAPSHOT_REPO_ID }}
@@ -30,4 +30,4 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Build and publish verified snapshot
-        run: python scripts/build_snapshot.py --output data/snapshot --max-symbols 800 --history-years 4 --force-refresh --publish
+        run: python scripts/build_snapshot.py --output data/snapshot --max-symbols 3000 --history-years 4 --force-refresh --publish

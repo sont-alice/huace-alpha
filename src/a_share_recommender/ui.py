@@ -56,7 +56,7 @@ def render_app() -> None:
             prefer_tushare = False
             tushare_token = ""
             boards = BOARD_OPTIONS
-            max_symbols = 800
+            max_symbols = 3000
             history_years = 4
             use_finance = True
             force_refresh = False
@@ -66,8 +66,8 @@ def render_app() -> None:
             prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
             tushare_token = st.text_input("Tushare token", type="password")
             boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS)
-            st.caption("推荐列表使用真实数据大池排名：最多扫描 800 只股票，并按综合评估从高到低输出。")
-            max_symbols = st.slider("真实数据股票数量", 20, 800, 800, 20)
+            st.caption("推荐列表使用真实数据大池排名：最多扫描 3000 只股票，并按综合评估从高到低输出。")
+            max_symbols = st.slider("真实数据股票数量", 20, 3000, 3000, 20)
             history_years = st.slider("历史数据年限", 2, 6, 4, 1)
             use_finance = st.checkbox("启用财务增强（较慢）", value=True)
             force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False)
@@ -156,7 +156,8 @@ def render_app() -> None:
 
     with tab_rec:
         st.subheader("推荐列表")
-        st.caption("当前为真实数据大池排名口径：候选股来自所选板块最多 800 只股票，并严格按综合评估从高到低排列。")
+        scored_count = int(result.latest_scored["code"].nunique())
+        st.caption(f"当前为真实数据大池排名口径：实际评分 {scored_count} 只股票，并严格按综合评估从高到低排列。")
         st.dataframe(
             displayed_recommendations,
             use_container_width=True,
@@ -210,6 +211,8 @@ def render_app() -> None:
             {
                 "数据模式": result.provider_status.mode,
                 "数据行数": result.provider_status.rows,
+                "行情股票数": int(result.market["code"].nunique()),
+                "评分股票数": int(result.latest_scored["code"].nunique()),
                 "训练行数": result.model_result.train_rows,
                 "测试行数": result.model_result.test_rows,
                 "训练截止": result.model_result.train_end.strftime("%Y-%m-%d"),
@@ -262,13 +265,14 @@ def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> N
 
 def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
     snapshot_age = (pd.Timestamp.now().normalize() - result.data_date.normalize()).days
+    scored_count = int(result.latest_scored["code"].nunique())
     if result.provider_status.mode.startswith("snapshot-") and snapshot_age > 3:
         data_title = "数据状态：共享快照已过期"
         data_body = f"当前快照数据日期为 {result.data_date:%Y-%m-%d}，距今 {snapshot_age} 天。系统已保留最近一次成功结果，请等待自动更新。"
         data_class = "health-warn"
     elif result.provider_status.mode.startswith("snapshot-"):
         data_title = "数据状态：共享快照可用"
-        data_body = f"当前使用每日预计算的真实数据快照，数据日期：{result.data_date:%Y-%m-%d}。"
+        data_body = f"当前使用每日预计算的真实数据快照，数据日期：{result.data_date:%Y-%m-%d}，评分覆盖：{scored_count} 只。"
         data_class = "health-ok"
     elif result.provider_status.mode == "akshare-stale-cache":
         data_title = "数据状态：使用最近交易日缓存"
@@ -314,7 +318,7 @@ def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
 
 def _render_landing(evaluation_code: str, public_mode: bool = False) -> None:
     recommendation_copy = (
-        "点击左侧“查看最新推荐”。系统直接读取每日收盘后生成的 800 股共享快照。"
+        "点击左侧“查看最新推荐”。系统直接读取每日收盘后生成的 3000 股共享快照。"
         if public_mode
         else "选择市场板块和数据源后，点击左侧“生成今日推荐”。系统会拉取真实行情、训练集成模型并输出经过风控过滤的候选清单。"
     )

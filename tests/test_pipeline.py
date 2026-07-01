@@ -22,7 +22,7 @@ from a_share_recommender.pipeline import run_pipeline
 from a_share_recommender.sample_data import make_sample_market
 from a_share_recommender.backtest import _cap_industry
 from a_share_recommender.recommend import _cap_board, make_recommendations
-from a_share_recommender.snapshot import load_snapshot, write_snapshot
+from a_share_recommender.snapshot import APP_SNAPSHOT_FILES, load_snapshot, read_manifest, write_snapshot
 
 
 def test_feature_frame_has_expected_columns():
@@ -63,6 +63,10 @@ def test_pipeline_returns_recommendations_and_metrics():
     assert result.metrics["periods"] > 0
     assert len(result.recommendations) <= 5
     assert {"code", "board", "score", "risk_tags", "reason"}.issubset(result.recommendations.columns)
+
+
+def test_real_data_request_defaults_to_3000_symbols():
+    assert DataRequest().max_symbols == 3000
 
 
 def test_stock_code_normalization():
@@ -258,6 +262,34 @@ def test_snapshot_round_trip_preserves_public_result(tmp_path):
     assert loaded.recommendations["code"].tolist() == expected_codes
     assert loaded.recommendations["composite_score"].is_monotonic_decreasing
     assert loaded.market["code"].nunique() == result.market["code"].nunique()
+    manifest = read_manifest(destination)
+    assert manifest["schema_version"] == 2
+    assert manifest["market_symbol_count"] == result.market["code"].nunique()
+    assert manifest["scored_symbol_count"] == result.latest_scored["code"].nunique()
+    assert (destination / "provider_market.parquet").exists()
+
+
+def test_public_snapshot_load_does_not_require_builder_fallback_file(tmp_path):
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+    source = write_snapshot(result, tmp_path / "source", config)
+    app_only = tmp_path / "app-only"
+    app_only.mkdir()
+    (app_only / "manifest.json").write_bytes((source / "manifest.json").read_bytes())
+    for name in APP_SNAPSHOT_FILES:
+        (app_only / name).write_bytes((source / name).read_bytes())
+
+    loaded = load_snapshot(app_only)
+
+    assert loaded.latest_scored["code"].nunique() == result.latest_scored["code"].nunique()
+
+
+def test_snapshot_rejects_incomplete_expected_symbol_coverage(tmp_path):
+    config = StrategyConfig(horizon_days=20, top_n=5, min_amount=1_000_000)
+    result = run_pipeline(config, data_request=DataRequest(force_sample=True))
+
+    with pytest.raises(RuntimeError, match="快照覆盖未达标"):
+        write_snapshot(result, tmp_path / "snapshot", config, expected_symbols=3000)
 
 
 def test_snapshot_rejects_modified_file(tmp_path):

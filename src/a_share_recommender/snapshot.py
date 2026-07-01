@@ -18,30 +18,49 @@ from .modeling import ModelResult
 from .pipeline import PipelineResult
 
 
-SCHEMA_VERSION = 1
-SNAPSHOT_FILES = (
+SCHEMA_VERSION = 2
+APP_SNAPSHOT_FILES = (
     "result.json",
     "recommendations.parquet",
     "latest_scored.parquet",
     "equity_curve.parquet",
     "market_history.parquet",
 )
+BUILDER_SNAPSHOT_FILES = ("provider_market.parquet",)
+SNAPSHOT_FILES = APP_SNAPSHOT_FILES
 
 
 def public_snapshot_mode() -> bool:
     return os.getenv("PUBLIC_SNAPSHOT_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def write_snapshot(result: PipelineResult, destination: Path | str, config: StrategyConfig) -> Path:
+def write_snapshot(
+    result: PipelineResult,
+    destination: Path | str,
+    config: StrategyConfig,
+    expected_symbols: int | None = None,
+) -> Path:
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
     try:
         recommendations = result.recommendations.sort_values("composite_score", ascending=False).reset_index(drop=True)
+        market_symbol_count = int(result.market["code"].nunique())
+        scored_symbol_count = int(result.latest_scored["code"].nunique())
+        if expected_symbols is not None and (
+            market_symbol_count < expected_symbols or scored_symbol_count < expected_symbols
+        ):
+            raise RuntimeError(
+                f"快照覆盖未达标：要求 {expected_symbols} 只，"
+                f"行情 {market_symbol_count} 只，评分 {scored_symbol_count} 只。"
+            )
+        if not recommendations["composite_score"].is_monotonic_decreasing:
+            raise RuntimeError("推荐结果未按综合评分降序排列。")
         recommendations.to_parquet(temp_dir / "recommendations.parquet", index=False)
         result.latest_scored.to_parquet(temp_dir / "latest_scored.parquet", index=False)
         result.equity_curve.to_parquet(temp_dir / "equity_curve.parquet", index=False)
         result.market[["date", "code", "close"]].to_parquet(temp_dir / "market_history.parquet", index=False)
+        result.market.to_parquet(temp_dir / "provider_market.parquet", index=False)
 
         payload = {
             "provider_status": asdict(result.provider_status),
@@ -64,10 +83,14 @@ def write_snapshot(result: PipelineResult, destination: Path | str, config: Stra
             "schema_version": SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "data_date": result.data_date.isoformat(),
-            "symbol_count": int(result.latest_scored["code"].nunique()),
+            "requested_symbol_count": expected_symbols or scored_symbol_count,
+            "market_symbol_count": market_symbol_count,
+            "scored_symbol_count": scored_symbol_count,
+            "symbol_count": scored_symbol_count,
             "row_count": int(len(result.market)),
             "provider_mode": result.provider_status.mode,
-            "files": {name: _sha256(temp_dir / name) for name in SNAPSHOT_FILES},
+            "app_files": {name: _sha256(temp_dir / name) for name in APP_SNAPSHOT_FILES},
+            "builder_files": {name: _sha256(temp_dir / name) for name in BUILDER_SNAPSHOT_FILES},
         }
         _write_json(temp_dir / "manifest.json", manifest)
 
@@ -87,10 +110,11 @@ def load_snapshot(source: Path | str) -> PipelineResult:
         raise RuntimeError(f"线上快照不存在：{manifest_path}")
 
     manifest = _read_json(manifest_path)
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in {1, SCHEMA_VERSION}:
         raise RuntimeError("线上快照版本不兼容，请重新生成。")
-    file_hashes = manifest.get("files", {})
-    if set(file_hashes) != set(SNAPSHOT_FILES):
+    file_hashes = manifest.get("files", {}) if schema_version == 1 else manifest.get("app_files", {})
+    if set(file_hashes) != set(APP_SNAPSHOT_FILES):
         raise RuntimeError("线上快照文件清单不完整。")
     for name, expected_hash in file_hashes.items():
         path = source / name
@@ -142,7 +166,7 @@ def load_configured_snapshot() -> PipelineResult:
             repo_id=repo_id,
             repo_type="dataset",
             revision=os.getenv("HF_SNAPSHOT_REVISION", "main"),
-            allow_patterns=["manifest.json", *SNAPSHOT_FILES],
+            allow_patterns=["manifest.json", *APP_SNAPSHOT_FILES],
             token=os.getenv("HF_TOKEN") or None,
         )
     except Exception as exc:
