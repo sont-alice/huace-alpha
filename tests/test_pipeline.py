@@ -179,6 +179,13 @@ def test_narrow_cache_does_not_satisfy_multi_board_request():
     assert not _cache_satisfies_request(data, DataRequest(max_symbols=30))
 
 
+def test_full_market_cache_requires_the_requested_symbol_count():
+    data = make_sample_market(n_stocks=12, n_days=40)
+
+    assert not _cache_satisfies_request(data, DataRequest(max_symbols=13, full_market_scan=True))
+    assert _cache_satisfies_request(data, DataRequest(max_symbols=12, full_market_scan=True))
+
+
 def test_failed_symbols_are_filled_from_latest_real_history():
     stale = make_sample_market(n_stocks=3, n_days=40)
     codes = stale["code"].drop_duplicates().tolist()

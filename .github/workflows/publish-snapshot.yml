@@ -21,6 +21,7 @@ jobs:
       HF_SNAPSHOT_REPO_ID: ${{ vars.HF_SNAPSHOT_REPO_ID }}
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       DATA_FETCH_WORKERS: "12"
+      DATA_SOCKET_TIMEOUT: "30"
       TQDM_DISABLE: "1"
     steps:
       - uses: actions/checkout@v4

@@ -7,6 +7,7 @@ from importlib.util import find_spec
 from pathlib import Path
 import hashlib
 import os
+import socket
 import time
 
 import numpy as np
@@ -208,6 +209,7 @@ class AkshareProvider:
 
         frames = []
         errors: list[str] = []
+        socket.setdefaulttimeout(float(os.getenv("DATA_SOCKET_TIMEOUT", "30")))
         workers = max(1, min(int(os.getenv("DATA_FETCH_WORKERS", "8")), 12, len(symbols)))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="akshare") as executor:
             futures = {
@@ -522,7 +524,7 @@ def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
 
 def _min_symbols_for_request(request: DataRequest) -> int:
     if request.full_market_scan:
-        return max(8, min(request.max_symbols, 100))
+        return request.max_symbols
     return max(3, min(request.max_symbols, 8))
 
 
