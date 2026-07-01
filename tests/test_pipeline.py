@@ -9,6 +9,7 @@ from a_share_recommender.data_providers import (
     _cache_satisfies_request,
     _load_latest_provider_cache,
     _merge_missing_symbol_history,
+    _merge_refreshed_with_baseline,
     _normalize_akshare_tx_hist,
     _assert_full_market_universe,
     _select_request_symbols,
@@ -195,6 +196,25 @@ def test_failed_symbols_are_filled_from_latest_real_history():
 
     assert filled == 2
     assert set(merged["code"]) == set(codes)
+
+
+def test_incremental_refresh_keeps_baseline_history_and_prefers_current_rows():
+    baseline = make_sample_market(n_stocks=3, n_days=40)
+    codes = baseline["code"].drop_duplicates().tolist()
+    current = baseline[baseline["code"] == codes[0]].tail(2).copy()
+    current.loc[current.index[-1], "close"] = 999.0
+
+    merged, filled = _merge_refreshed_with_baseline(
+        current,
+        baseline,
+        [code.split(".")[0] for code in codes],
+    )
+
+    assert filled == 2
+    assert set(merged["code"]) == set(codes)
+    latest = merged[merged["code"] == codes[0]].sort_values("date").iloc[-1]
+    assert latest["close"] == 999.0
+    assert len(merged[merged["code"] == codes[0]]) == 40
 
 
 def test_large_pool_request_limits_filtered_symbols():

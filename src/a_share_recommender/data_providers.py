@@ -206,6 +206,12 @@ class AkshareProvider:
 
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
+        baseline = _load_latest_provider_cache(self.cache_dir, "akshare", request)
+        fetch_start_date = start_date
+        if baseline is not None and baseline["code"].nunique() >= request.max_symbols:
+            baseline_max_date = pd.Timestamp(baseline["date"].max())
+            incremental_start = (baseline_max_date - pd.Timedelta(days=45)).strftime("%Y%m%d")
+            fetch_start_date = max(start_date, incremental_start)
 
         frames = []
         errors: list[str] = []
@@ -219,7 +225,7 @@ class AkshareProvider:
                     self.cache_dir,
                     full_universe,
                     symbol,
-                    start_date,
+                    fetch_start_date,
                     end_date,
                     request.force_refresh,
                 ): symbol
@@ -237,18 +243,15 @@ class AkshareProvider:
                     errors.append(f"{symbol}:{type(exc).__name__}")
 
         if not frames:
-            stale = _load_latest_provider_cache(self.cache_dir, "akshare", request)
-            if stale is not None:
+            if baseline is not None:
                 message = "AKShare 当前连接失败，已使用最近一次真实数据缓存；失败样本：" + "；".join(errors[:5])
-                return stale, ProviderStatus("akshare-stale-cache", message, len(stale))
+                return baseline, ProviderStatus("akshare-stale-cache", message, len(baseline))
             raise RuntimeError("AKShare 日线接口未返回可用数据：" + "；".join(errors[:5]))
 
         data = pd.concat(frames, ignore_index=True)
         stale_fill_count = 0
-        if errors:
-            stale = _load_latest_provider_cache(self.cache_dir, "akshare", request)
-            if stale is not None:
-                data, stale_fill_count = _merge_missing_symbol_history(data, stale, symbols)
+        if baseline is not None:
+            data, stale_fill_count = _merge_refreshed_with_baseline(data, baseline, symbols)
         if request.use_finance:
             data = _attach_akshare_finance(ak, data, symbols[: min(len(symbols), 30)])
 
@@ -304,6 +307,20 @@ def _merge_missing_symbol_history(
     merged = pd.concat([current, fallback], ignore_index=True)
     merged = merged.drop_duplicates(["date", "code"], keep="first")
     return merged, int(fallback["code"].nunique())
+
+
+def _merge_refreshed_with_baseline(
+    current: pd.DataFrame,
+    baseline: pd.DataFrame,
+    symbols: list[str],
+) -> tuple[pd.DataFrame, int]:
+    requested_codes = {_suffix_code(symbol) for symbol in symbols}
+    current_codes = set(current["code"].astype(str))
+    baseline_requested = baseline[baseline["code"].astype(str).isin(requested_codes)].copy()
+    filled_codes = (requested_codes - current_codes) & set(baseline_requested["code"].astype(str))
+    merged = pd.concat([current, baseline_requested], ignore_index=True)
+    merged = merged.drop_duplicates(["date", "code"], keep="first")
+    return merged, len(filled_codes)
 
 
 class TushareProvider:
