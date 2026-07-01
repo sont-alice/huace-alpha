@@ -11,8 +11,8 @@ from .pipeline import run_pipeline
 from .snapshot import load_configured_snapshot, public_snapshot_mode
 
 
-BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板"]
-APP_STATE_VERSION = "large-pool-ranking-v1"
+BOARD_OPTIONS = ["上证主板", "深证主板", "创业板", "科创板", "北交所"]
+APP_STATE_VERSION = "all-listed-ranking-v1"
 
 
 def render_app() -> None:
@@ -56,7 +56,7 @@ def render_app() -> None:
             prefer_tushare = False
             tushare_token = ""
             boards = BOARD_OPTIONS
-            max_symbols = 3000
+            max_symbols = None
             history_years = 4
             use_finance = True
             force_refresh = False
@@ -66,8 +66,8 @@ def render_app() -> None:
             prefer_tushare = st.checkbox("优先使用 Tushare Pro", value=False)
             tushare_token = st.text_input("Tushare token", type="password")
             boards = st.multiselect("市场板块", BOARD_OPTIONS, default=BOARD_OPTIONS)
-            st.caption("推荐列表使用真实数据大池排名：最多扫描 3000 只股票，并按综合评估从高到低输出。")
-            max_symbols = st.slider("真实数据股票数量", 20, 3000, 3000, 20)
+            st.caption("推荐列表覆盖全部当前上市 A 股，并按综合评估从高到低输出。股票数量随上市和退市动态更新。")
+            max_symbols = None
             history_years = st.slider("历史数据年限", 2, 6, 4, 1)
             use_finance = st.checkbox("启用财务增强（较慢）", value=True)
             force_refresh = st.checkbox("忽略今日缓存并重新拉取", value=False)
@@ -83,6 +83,7 @@ def render_app() -> None:
     extra_symbols = (normalized_evaluation_code,) if normalized_evaluation_code else ()
     data_request = DataRequest(
         max_symbols=max_symbols,
+        all_listed=True,
         history_years=history_years,
         use_finance=use_finance,
         force_sample=False,
@@ -102,7 +103,7 @@ def render_app() -> None:
         prefer_tushare,
         bool(tushare_token),
         tuple(boards or BOARD_OPTIONS),
-        max_symbols,
+        "all-listed",
         history_years,
         use_finance,
         force_refresh,
@@ -217,8 +218,14 @@ def render_app() -> None:
                 "测试行数": result.model_result.test_rows,
                 "训练截止": result.model_result.train_end.strftime("%Y-%m-%d"),
                 "测试开始": result.model_result.test_start.strftime("%Y-%m-%d"),
+                "目标股票数": result.provider_status.requested_symbols,
+                "本次刷新股票数": result.provider_status.refreshed_symbols,
+                "缓存补齐股票数": result.provider_status.baseline_filled_symbols,
             }
         )
+        board_counts = result.latest_scored["board"].value_counts().rename_axis("市场板块").reset_index(name="评分股票数")
+        st.subheader("板块覆盖")
+        st.dataframe(board_counts, use_container_width=True, hide_index=True)
 
 
 def _render_stock_evaluation(raw_code: str, result, config: StrategyConfig) -> None:
@@ -318,7 +325,7 @@ def _render_health_panel(result, market_regime: float, buy_count: int) -> None:
 
 def _render_landing(evaluation_code: str, public_mode: bool = False) -> None:
     recommendation_copy = (
-        "点击左侧“查看最新推荐”。系统直接读取每日收盘后生成的 3000 股共享快照。"
+        "点击左侧“查看最新推荐”。系统直接读取每日收盘后生成的全市场 A 股共享快照。"
         if public_mode
         else "选择市场板块和数据源后，点击左侧“生成今日推荐”。系统会拉取真实行情、训练集成模型并输出经过风控过滤的候选清单。"
     )

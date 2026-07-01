@@ -20,7 +20,7 @@ license: mit
 
 ## 功能
 
-- 推荐列表：最多扫描 3000 只真实股票，按模型综合评分从高到低输出候选股。
+- 推荐列表：扫描全部当前上市 A 股，按模型综合评分从高到低输出候选股。
 - 个股评估：输入股票代码后，强制加入该股票，展示评级、胜率评分、模型分位、技术面、基本面、风险标签和近一年走势。
 - 板块筛选：支持上证主板、深证主板、创业板、科创板。
 - 回测证据：展示样本外资金曲线、胜率、回撤和收益回撤比。
@@ -46,12 +46,12 @@ pytest
 
 ## 公网部署
 
-公网版使用 Hugging Face Docker Space 运行，只读取已验证的每日快照，不会因为访客点击而重新训练 3000 股模型。
+公网版使用 Hugging Face Docker Space 运行，只读取已验证的每日全市场快照，不会因为访客点击而重新训练模型。
 
 生成本地快照：
 
 ```powershell
-python scripts/build_snapshot.py --output data/snapshot --max-symbols 3000
+python scripts/build_snapshot.py --output data/snapshot
 ```
 
 使用本地快照测试公网模式：

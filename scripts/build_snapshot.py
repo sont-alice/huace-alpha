@@ -23,7 +23,7 @@ from a_share_recommender.snapshot import write_snapshot
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build and optionally publish the public A-share snapshot.")
     parser.add_argument("--output", default="data/snapshot")
-    parser.add_argument("--max-symbols", type=int, default=3000)
+    parser.add_argument("--max-symbols", type=int, default=None, help="Optional bounded test run; omit for all listed A-shares.")
     parser.add_argument("--history-years", type=int, default=4)
     parser.add_argument("--skip-finance", action="store_true")
     parser.add_argument("--force-refresh", action="store_true")
@@ -39,6 +39,7 @@ def main() -> None:
     config = StrategyConfig(top_n=20)
     request = DataRequest(
         max_symbols=args.max_symbols,
+        all_listed=args.max_symbols is None,
         history_years=args.history_years,
         use_finance=not args.skip_finance,
         force_refresh=args.force_refresh,
@@ -51,7 +52,10 @@ def main() -> None:
         tushare_token=os.getenv("TUSHARE_TOKEN") or None,
         data_request=request,
     )
-    output = write_snapshot(result, args.output, config, expected_symbols=args.max_symbols)
+    expected_symbols = result.provider_status.requested_symbols or args.max_symbols
+    if expected_symbols is None:
+        raise RuntimeError("数据源没有报告全市场目标股票数，拒绝发布快照。")
+    output = write_snapshot(result, args.output, config, expected_symbols=expected_symbols)
     print(f"Snapshot written to {output}")
 
     if args.publish:

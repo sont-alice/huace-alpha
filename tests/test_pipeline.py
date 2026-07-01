@@ -6,7 +6,9 @@ import pytest
 from a_share_recommender.config import FEATURE_COLUMNS, StrategyConfig
 from a_share_recommender.data_providers import (
     DataRequest,
+    _akshare_universe,
     _cache_satisfies_request,
+    _compact_market_types,
     _load_latest_provider_cache,
     _merge_missing_symbol_history,
     _merge_refreshed_with_baseline,
@@ -68,14 +70,20 @@ def test_pipeline_returns_recommendations_and_metrics():
     assert {"code", "board", "score", "risk_tags", "reason"}.issubset(result.recommendations.columns)
 
 
-def test_real_data_request_defaults_to_3000_symbols():
-    assert DataRequest().max_symbols == 3000
+def test_real_data_request_defaults_to_all_listed_symbols():
+    request = DataRequest()
+    assert request.max_symbols is None
+    assert request.all_listed
+    assert "北交所" in request.boards
 
 
 def test_stock_code_normalization():
     assert normalize_stock_code("000001") == "000001.SZ"
     assert normalize_stock_code("600519") == "600519.SH"
     assert normalize_stock_code("300750.SZ") == "300750.SZ"
+    assert normalize_stock_code("430047") == "430047.BJ"
+    assert normalize_stock_code("832982.BJ") == "832982.BJ"
+    assert known_stock_identity("689009")["board"] == "科创板"
 
 
 def test_known_stock_identity_for_baotong_technology():
@@ -105,6 +113,13 @@ def test_tx_symbol_and_normalization_for_baotong_technology():
     assert row["industry"] == "I 信息技术"
     assert row["board"] == "创业板"
     assert row["close"] == 24.92
+
+
+def test_beijing_stock_exchange_identity_and_tencent_symbol():
+    identity = known_stock_identity("430047")
+    assert identity["code"] == "430047.BJ"
+    assert identity["board"] == "北交所"
+    assert _tx_symbol("430047") == "bj430047"
 
 
 def test_stock_evaluation_for_existing_sample_stock():
@@ -238,6 +253,81 @@ def test_large_pool_request_limits_filtered_symbols():
     assert len(selected) < filtered["code"].nunique()
 
 
+def test_all_listed_request_keeps_every_filtered_symbol():
+    universe = _core_fallback_universe()
+    request = DataRequest(all_listed=True, max_symbols=None)
+
+    selected = _select_request_symbols(universe, request)
+
+    assert selected == sorted(universe["code"].astype(str).tolist())
+
+
+def test_all_listed_universe_requires_every_requested_board():
+    universe = pd.DataFrame(
+        {
+            "code": [f"{i:06d}" for i in range(1000)],
+            "board": ["上证主板"] * 1000,
+        }
+    )
+    request = DataRequest(all_listed=True, full_market_scan=True)
+
+    with pytest.raises(RuntimeError, match="当前缺少"):
+        _assert_full_market_universe(universe, request, "code")
+
+
+def test_akshare_universe_fetches_star_market_separately(tmp_path):
+    class FakeAkshare:
+        def __init__(self):
+            self.sh_segments = []
+
+        def stock_info_sh_name_code(self, symbol):
+            self.sh_segments.append(symbol)
+            start, count = (600000, 500) if symbol == "主板A股" else (688000, 100)
+            return pd.DataFrame(
+                {
+                    "证券代码": [f"{start + i:06d}" for i in range(count)],
+                    "证券简称": [f"沪股{i}" for i in range(count)],
+                    "上市日期": ["2020-01-01"] * count,
+                }
+            )
+
+        def stock_info_sz_name_code(self):
+            return pd.DataFrame(
+                {
+                    "A股代码": [f"{i:06d}" for i in range(500)] + [f"{300000 + i:06d}" for i in range(500)],
+                    "A股简称": [f"深股{i}" for i in range(1000)],
+                    "所属行业": ["制造业"] * 1000,
+                    "板块": ["主板"] * 500 + ["创业板"] * 500,
+                    "A股上市日期": ["2020-01-01"] * 1000,
+                }
+            )
+
+        def stock_info_bj_name_code(self):
+            return pd.DataFrame(
+                {
+                    "证券代码": [f"{830000 + i:06d}" for i in range(100)],
+                    "证券简称": [f"北股{i}" for i in range(100)],
+                    "上市日期": ["2020-01-01"] * 100,
+                }
+            )
+
+    fake = FakeAkshare()
+    universe = _akshare_universe(fake, tmp_path, force_refresh=True)
+
+    assert fake.sh_segments == ["主板A股", "科创板"]
+    assert universe["board"].value_counts()["科创板"] >= 100
+    assert universe["board"].value_counts()["北交所"] >= 100
+
+
+def test_market_numeric_columns_are_compacted():
+    market = make_sample_market(n_stocks=3, n_days=40)
+
+    compact = _compact_market_types(market)
+
+    assert str(compact["close"].dtype) == "float32"
+    assert str(compact["list_days"].dtype) == "int32"
+
+
 def test_full_market_rejects_core_only_universe():
     request = DataRequest(full_market_scan=True)
     with pytest.raises(RuntimeError, match="大池排名需要完整"):
@@ -304,6 +394,7 @@ def test_snapshot_round_trip_preserves_public_result(tmp_path):
     assert manifest["schema_version"] == 2
     assert manifest["market_symbol_count"] == result.market["code"].nunique()
     assert manifest["scored_symbol_count"] == result.latest_scored["code"].nunique()
+    assert sum(manifest["board_counts"].values()) == result.latest_scored["code"].nunique()
     assert (destination / "provider_market.parquet").exists()
 
 

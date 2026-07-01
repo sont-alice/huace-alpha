@@ -32,6 +32,8 @@ def normalize_stock_code(raw: str) -> str:
     if not digits:
         return ""
     digits = digits.zfill(6)
+    if digits.startswith(("4", "8", "92")):
+        return f"{digits}.BJ"
     if digits.startswith(("6", "9", "688")):
         return f"{digits}.SH"
     return f"{digits}.SZ"
@@ -58,7 +60,7 @@ def evaluate_stock(
                 f"{identity['code']} 是 {identity['board']} 的 {identity['name']}，但当前数据集缺少它的行情。"
                 "这通常是 AKShare 在线接口连接失败且本地缓存未包含该股导致的；请勾选“忽略今日缓存并重新拉取”，或稍后网络恢复后重新评估。",
             )
-        return _not_found(code, "当前数据集中没有这只股票。请增大“真实数据股票数量”或确认代码是否正确。")
+        return _not_found(code, "当前全市场快照中没有这只股票。请确认代码和上市状态；若为新上市股票，请等待下一次数据快照更新。")
 
     row = latest.iloc[0]
     history["ma20"] = history["close"].rolling(20).mean()

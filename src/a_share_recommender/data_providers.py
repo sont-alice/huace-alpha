@@ -154,11 +154,15 @@ class ProviderStatus:
     mode: str
     message: str
     rows: int
+    requested_symbols: int = 0
+    refreshed_symbols: int = 0
+    baseline_filled_symbols: int = 0
 
 
 @dataclass(frozen=True)
 class DataRequest:
-    max_symbols: int = 3000
+    max_symbols: int | None = None
+    all_listed: bool = True
     history_years: int = 4
     use_finance: bool = True
     force_sample: bool = False
@@ -166,7 +170,11 @@ class DataRequest:
     allow_sample_fallback: bool = False
     extra_symbols: tuple[str, ...] = ()
     full_market_scan: bool = False
-    boards: tuple[str, ...] = ("上证主板", "深证主板", "创业板", "科创板")
+    boards: tuple[str, ...] = ("上证主板", "深证主板", "创业板", "科创板", "北交所")
+
+    def __post_init__(self) -> None:
+        if self.max_symbols is not None and self.all_listed:
+            object.__setattr__(self, "all_listed", False)
 
 
 class SampleProvider:
@@ -187,7 +195,7 @@ class AkshareProvider:
 
     def load_market(self, request: DataRequest) -> tuple[pd.DataFrame, ProviderStatus]:
         cache_path = _cache_path(self.cache_dir, "akshare", request)
-        if cache_path.exists() and not request.force_refresh:
+        if cache_path.exists() and not request.force_refresh and not request.all_listed:
             data = pd.read_parquet(cache_path)
             if _cache_satisfies_request(data, request):
                 return data, ProviderStatus("akshare-cache", f"使用 AKShare 本地缓存：{cache_path}", len(data))
@@ -197,28 +205,32 @@ class AkshareProvider:
 
         import akshare as ak
 
+        socket.setdefaulttimeout(float(os.getenv("DATA_SOCKET_TIMEOUT", "30")))
         full_universe = _akshare_universe(ak, self.cache_dir, request.force_refresh)
         _assert_full_market_universe(full_universe, request, "code")
         baseline = _load_latest_provider_cache(self.cache_dir, "akshare", request)
-        if baseline is not None:
+        if request.all_listed:
+            universe = _filter_boards(full_universe, request.boards)
+            symbols = _select_request_symbols(universe, request)
+        elif baseline is not None:
             symbols = _symbols_from_baseline(baseline, request)
         else:
             universe = _filter_boards(full_universe, request.boards)
             symbols = _select_request_symbols(universe, request)
             if not symbols:
-                symbols = CORE_A_SHARE_POOL[: request.max_symbols]
+                symbols = CORE_A_SHARE_POOL if request.max_symbols is None else CORE_A_SHARE_POOL[: request.max_symbols]
 
         start_date = (date.today() - timedelta(days=365 * request.history_years + 90)).strftime("%Y%m%d")
         end_date = date.today().strftime("%Y%m%d")
         fetch_start_date = start_date
-        if baseline is not None and baseline["code"].nunique() >= request.max_symbols:
+        baseline_codes = set(baseline["code"].astype(str)) if baseline is not None else set()
+        if baseline is not None:
             baseline_max_date = pd.Timestamp(baseline["date"].max())
             incremental_start = (baseline_max_date - pd.Timedelta(days=45)).strftime("%Y%m%d")
             fetch_start_date = max(start_date, incremental_start)
 
         frames = []
         errors: list[str] = []
-        socket.setdefaulttimeout(float(os.getenv("DATA_SOCKET_TIMEOUT", "30")))
         workers = max(1, min(int(os.getenv("DATA_FETCH_WORKERS", "8")), 12, len(symbols)))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="akshare") as executor:
             futures = {
@@ -228,7 +240,7 @@ class AkshareProvider:
                     self.cache_dir,
                     full_universe,
                     symbol,
-                    fetch_start_date,
+                    fetch_start_date if _suffix_code(symbol) in baseline_codes else start_date,
                     end_date,
                     request.force_refresh,
                 ): symbol
@@ -248,7 +260,13 @@ class AkshareProvider:
         if not frames:
             if baseline is not None:
                 message = "AKShare 当前连接失败，已使用最近一次真实数据缓存；失败样本：" + "；".join(errors[:5])
-                return baseline, ProviderStatus("akshare-stale-cache", message, len(baseline))
+                return baseline, ProviderStatus(
+                    "akshare-stale-cache",
+                    message,
+                    len(baseline),
+                    requested_symbols=len(symbols),
+                    baseline_filled_symbols=int(baseline["code"].nunique()),
+                )
             raise RuntimeError("AKShare 日线接口未返回可用数据：" + "；".join(errors[:5]))
 
         data = pd.concat(frames, ignore_index=True)
@@ -258,13 +276,20 @@ class AkshareProvider:
         if request.use_finance:
             data = _attach_akshare_finance(ak, data, symbols[: min(len(symbols), 30)])
 
-        data = data.sort_values(["date", "code"]).reset_index(drop=True)
+        data = _compact_market_types(data.sort_values(["date", "code"]).reset_index(drop=True))
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         data.to_parquet(cache_path, index=False)
         suffix = f"；失败 {len(errors)} 只" if errors else ""
         if stale_fill_count:
             suffix += f"；其中 {stale_fill_count} 只使用最近真实历史补齐"
-        return data, ProviderStatus("akshare", f"使用 AKShare 真实日线/行业/财务数据{suffix}", len(data))
+        return data, ProviderStatus(
+            "akshare",
+            f"使用 AKShare 真实日线/行业/财务数据{suffix}",
+            len(data),
+            requested_symbols=len(symbols),
+            refreshed_symbols=len(symbols) - len(errors),
+            baseline_filled_symbols=stale_fill_count,
+        )
 
 
 def _load_one_akshare_symbol(
@@ -326,12 +351,39 @@ def _merge_refreshed_with_baseline(
     return merged, len(filled_codes)
 
 
+def _compact_market_types(data: pd.DataFrame) -> pd.DataFrame:
+    compact = data.copy()
+    float_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+        "turnover_rate",
+        "money_flow",
+        "pe_ttm",
+        "roe",
+        "net_profit_growth",
+        "market_cap",
+    ]
+    for column in float_columns:
+        if column in compact.columns:
+            compact[column] = pd.to_numeric(compact[column], errors="coerce").astype("float32")
+    if "list_days" in compact.columns:
+        compact["list_days"] = pd.to_numeric(compact["list_days"], errors="coerce").fillna(9999).astype("int32")
+    return compact
+
+
 def _symbols_from_baseline(baseline: pd.DataFrame, request: DataRequest) -> list[str]:
     latest = baseline.sort_values("date").groupby("code", as_index=False).tail(1)
     if request.boards and "全市场" not in request.boards and "board" in latest.columns:
         latest = latest[latest["board"].isin(request.boards)]
     base = latest.sort_values(["board", "code"] if "board" in latest.columns else ["code"])
-    symbols = base["code"].map(_plain_symbol).head(request.max_symbols).tolist()
+    symbols = base["code"].map(_plain_symbol)
+    if request.max_symbols is not None:
+        symbols = symbols.head(request.max_symbols)
+    symbols = symbols.tolist()
     return _merge_symbols(symbols, request.extra_symbols)
 
 
@@ -384,11 +436,19 @@ class TushareProvider:
         if not frames:
             raise RuntimeError("Tushare 日线接口未返回可用数据：" + "；".join(errors[:5]))
 
-        data = pd.concat(frames, ignore_index=True).sort_values(["date", "code"]).reset_index(drop=True)
+        data = _compact_market_types(
+            pd.concat(frames, ignore_index=True).sort_values(["date", "code"]).reset_index(drop=True)
+        )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         data.to_parquet(cache_path, index=False)
         suffix = f"；失败 {len(errors)} 只" if errors else ""
-        return data, ProviderStatus("tushare", f"使用 Tushare Pro 真实日线/行业/财务数据{suffix}", len(data))
+        return data, ProviderStatus(
+            "tushare",
+            f"使用 Tushare Pro 真实日线/行业/财务数据{suffix}",
+            len(data),
+            requested_symbols=len(symbols),
+            refreshed_symbols=len(symbols) - len(errors),
+        )
 
 
 class ProviderRouter:
@@ -438,7 +498,8 @@ class ProviderRouter:
 def _cache_path(cache_dir: Path, provider: str, request: DataRequest) -> Path:
     extras = ",".join(sorted(_plain_symbol(symbol) for symbol in request.extra_symbols))
     boards = ",".join(request.boards)
-    key = f"{provider}-{request.max_symbols}-{request.history_years}-{request.use_finance}-{request.full_market_scan}-{extras}-{boards}-{date.today():%Y%m%d}"
+    scope = "all-listed" if request.all_listed else str(request.max_symbols)
+    key = f"{provider}-{scope}-{request.history_years}-{request.use_finance}-{request.full_market_scan}-{extras}-{boards}-{date.today():%Y%m%d}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return cache_dir / f"{provider}_{digest}.parquet"
 
@@ -546,15 +607,17 @@ def _cache_satisfies_request(data: pd.DataFrame, request: DataRequest) -> bool:
     if "board" in data.columns:
         requested_boards = {board for board in request.boards if board != "全市场"}
         available_requested = set(data["board"].dropna().astype(str)) & requested_boards
-        if len(requested_boards) >= 2 and request.max_symbols >= 8 and len(available_requested) < 2:
+        if len(requested_boards) >= 2 and (request.max_symbols or 8) >= 8 and len(available_requested) < 2:
             return False
     return True
 
 
 def _min_symbols_for_request(request: DataRequest) -> int:
+    if request.all_listed:
+        return 1000
     if request.full_market_scan:
-        return request.max_symbols
-    return max(3, min(request.max_symbols, 8))
+        return int(request.max_symbols or 1000)
+    return max(3, min(int(request.max_symbols or 8), 8))
 
 
 def _assert_full_market_universe(universe: pd.DataFrame, request: DataRequest, code_column: str) -> None:
@@ -562,6 +625,16 @@ def _assert_full_market_universe(universe: pd.DataFrame, request: DataRequest, c
         return
     if universe.empty or code_column not in universe.columns or universe[code_column].nunique() < 1000:
         raise RuntimeError("大池排名需要完整 A 股股票列表；当前数据源只返回了过少股票，不能作为推荐依据。请稍后重试、使用 Tushare token，或降低真实数据股票数量后重新运行。")
+    if request.all_listed:
+        required_boards = {board for board in request.boards if board != "全市场"}
+        available_boards = set(universe.get("board", pd.Series(dtype=str)).dropna().astype(str))
+        missing_boards = required_boards - available_boards
+        if missing_boards:
+            raise RuntimeError(
+                "全市场排名需要覆盖全部上市板块；当前缺少：" + "、".join(sorted(missing_boards)) + "。"
+            )
+        if not _universe_is_usable(universe.rename(columns={code_column: "code"})):
+            raise RuntimeError("全市场上市名录覆盖异常，至少一个板块返回数量明显不足，拒绝生成残缺排名。")
 
 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
@@ -572,21 +645,22 @@ def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
             return cached
 
     rows = []
-    try:
-        sh = ak.stock_info_sh_name_code()
-        rows.append(
-            pd.DataFrame(
-                {
-                    "code": sh["证券代码"].astype(str).str.zfill(6),
-                    "name": sh["证券简称"].astype(str),
-                    "industry": "未知",
-                    "board": sh["证券代码"].astype(str).str.zfill(6).map(_board_from_symbol),
-                    "listing_date": pd.to_datetime(sh["上市日期"], errors="coerce"),
-                }
+    for sh_segment in ("主板A股", "科创板"):
+        try:
+            sh = ak.stock_info_sh_name_code(symbol=sh_segment)
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "code": sh["证券代码"].astype(str).str.zfill(6),
+                        "name": sh["证券简称"].astype(str),
+                        "industry": "未知",
+                        "board": sh["证券代码"].astype(str).str.zfill(6).map(_board_from_symbol),
+                        "listing_date": pd.to_datetime(sh["上市日期"], errors="coerce"),
+                    }
+                )
             )
-        )
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     try:
         sz = ak.stock_info_sz_name_code()
@@ -629,8 +703,9 @@ def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
         universe["rank"] = universe["code"].map(core_rank)
         universe["rank"] = universe["rank"].fillna(len(core_rank) + universe.index.to_series())
         universe = universe.sort_values("rank").drop(columns=["rank"]).reset_index(drop=True)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        universe.to_parquet(cache_path, index=False)
+        if _universe_is_usable(universe):
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            universe.to_parquet(cache_path, index=False)
         return universe
 
     return pd.DataFrame(
@@ -823,6 +898,8 @@ def _safe_tushare_fina_indicator(pro, ts_code: str) -> pd.DataFrame:
 
 def _suffix_code(symbol: str) -> str:
     symbol = str(symbol).split(".")[0].zfill(6)
+    if symbol.startswith(("4", "8", "92")):
+        return f"{symbol}.BJ"
     if symbol.startswith(("6", "9", "688")):
         return f"{symbol}.SH"
     return f"{symbol}.SZ"
@@ -830,7 +907,8 @@ def _suffix_code(symbol: str) -> str:
 
 def _tx_symbol(symbol: str) -> str:
     plain = _plain_symbol(symbol)
-    prefix = "sh" if _suffix_code(plain).endswith(".SH") else "sz"
+    suffixed = _suffix_code(plain)
+    prefix = "bj" if suffixed.endswith(".BJ") else "sh" if suffixed.endswith(".SH") else "sz"
     return f"{prefix}{plain}"
 
 
@@ -845,7 +923,9 @@ def known_stock_identity(symbol: str) -> dict[str, str]:
 
 def _board_from_symbol(symbol: str) -> str:
     plain = _plain_symbol(symbol)
-    if plain.startswith("688"):
+    if plain.startswith(("4", "8", "92")):
+        return "北交所"
+    if plain.startswith(("688", "689")):
         return "科创板"
     if plain.startswith(("600", "601", "603", "605")):
         return "上证主板"
@@ -887,8 +967,15 @@ def _core_fallback_universe() -> pd.DataFrame:
 def _universe_is_usable(universe: pd.DataFrame) -> bool:
     if universe.empty or "board" not in universe.columns:
         return False
-    boards = set(universe["board"].dropna().astype(str))
-    return bool({"上证主板", "深证主板"}.issubset(boards) and ({"创业板", "科创板"} & boards))
+    counts = universe["board"].value_counts()
+    minimums = {
+        "上证主板": 500,
+        "深证主板": 500,
+        "创业板": 500,
+        "科创板": 100,
+        "北交所": 100,
+    }
+    return all(int(counts.get(board, 0)) >= minimum for board, minimum in minimums.items())
 
 
 def _select_symbols_by_board(universe: pd.DataFrame, max_symbols: int, boards: tuple[str, ...]) -> list[str]:
@@ -914,7 +1001,10 @@ def _select_symbols_by_board(universe: pd.DataFrame, max_symbols: int, boards: t
 def _select_request_symbols(universe: pd.DataFrame, request: DataRequest) -> list[str]:
     if universe.empty:
         return _merge_symbols([], request.extra_symbols)
-    base = _select_symbols_by_board(universe, request.max_symbols, request.boards)
+    if request.all_listed:
+        base = universe.sort_values("code")["code"].astype(str).tolist()
+    else:
+        base = _select_symbols_by_board(universe, int(request.max_symbols or len(universe)), request.boards)
     return _merge_symbols(base, request.extra_symbols)
 
 

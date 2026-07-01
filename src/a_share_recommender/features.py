@@ -49,7 +49,11 @@ def build_feature_frame(market: pd.DataFrame, horizon_days: int) -> pd.DataFrame
     data["excess_return"] = data["future_return"] - date_median
     data["target_win"] = (data["excess_return"] > 0).astype(float)
 
-    return data.drop(columns=["ma_20", "ma_60"]).replace([np.inf, -np.inf], np.nan)
+    data = data.drop(columns=["ma_20", "ma_60"]).replace([np.inf, -np.inf], np.nan)
+    for column in FEATURE_COLUMNS:
+        if column in data.columns:
+            data[column] = pd.to_numeric(data[column], errors="coerce").astype("float32")
+    return data
 
 
 def latest_features(features: pd.DataFrame) -> pd.DataFrame:

@@ -48,7 +48,7 @@ def write_snapshot(
         market_symbol_count = int(result.market["code"].nunique())
         scored_symbol_count = int(result.latest_scored["code"].nunique())
         if expected_symbols is not None and (
-            market_symbol_count < expected_symbols or scored_symbol_count < expected_symbols
+            market_symbol_count != expected_symbols or scored_symbol_count != expected_symbols
         ):
             raise RuntimeError(
                 f"快照覆盖未达标：要求 {expected_symbols} 只，"
@@ -89,6 +89,13 @@ def write_snapshot(
             "symbol_count": scored_symbol_count,
             "row_count": int(len(result.market)),
             "provider_mode": result.provider_status.mode,
+            "requested_symbols": result.provider_status.requested_symbols,
+            "refreshed_symbols": result.provider_status.refreshed_symbols,
+            "baseline_filled_symbols": result.provider_status.baseline_filled_symbols,
+            "board_counts": {
+                str(board): int(count)
+                for board, count in result.latest_scored["board"].value_counts().items()
+            },
             "app_files": {name: _sha256(temp_dir / name) for name in APP_SNAPSHOT_FILES},
             "builder_files": {name: _sha256(temp_dir / name) for name in BUILDER_SNAPSHOT_FILES},
         }
@@ -128,6 +135,9 @@ def load_snapshot(source: Path | str) -> PipelineResult:
         mode=f"snapshot-{original_status['mode']}",
         message=f"共享预计算快照；原数据状态：{original_status['message']}",
         rows=int(original_status["rows"]),
+        requested_symbols=int(original_status.get("requested_symbols", manifest.get("requested_symbol_count", 0))),
+        refreshed_symbols=int(original_status.get("refreshed_symbols", 0)),
+        baseline_filled_symbols=int(original_status.get("baseline_filled_symbols", 0)),
     )
     model_result = ModelResult(
         model=None,
