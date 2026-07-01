@@ -396,6 +396,7 @@ def test_snapshot_round_trip_preserves_public_result(tmp_path):
     assert manifest["scored_symbol_count"] == result.latest_scored["code"].nunique()
     assert sum(manifest["board_counts"].values()) == result.latest_scored["code"].nunique()
     assert (destination / "provider_market.parquet").exists()
+    assert (destination / "listed_universe.parquet").exists()
 
 
 def test_public_snapshot_load_does_not_require_builder_fallback_file(tmp_path):

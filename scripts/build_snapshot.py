@@ -8,6 +8,8 @@ from pathlib import Path
 import shutil
 import sys
 
+import pandas as pd
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -55,7 +57,15 @@ def main() -> None:
     expected_symbols = result.provider_status.requested_symbols or args.max_symbols
     if expected_symbols is None:
         raise RuntimeError("数据源没有报告全市场目标股票数，拒绝发布快照。")
-    output = write_snapshot(result, args.output, config, expected_symbols=expected_symbols)
+    universe_path = ROOT / "data" / "cache" / "akshare_universe.parquet"
+    listed_universe = pd.read_parquet(universe_path) if universe_path.exists() else None
+    output = write_snapshot(
+        result,
+        args.output,
+        config,
+        expected_symbols=expected_symbols,
+        listed_universe=listed_universe,
+    )
     print(f"Snapshot written to {output}")
 
     if args.publish:
@@ -89,19 +99,39 @@ def _bootstrap_previous_market(repo_id: str, token: str, cache_dir: Path) -> Pat
         return None
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected_hash = manifest.get("builder_files", {}).get("provider_market.parquet")
-    if not expected_hash:
-        print("Previous snapshot has no full-market fallback; continuing without bootstrap.")
-        return None
-    source = Path(
-        hf_hub_download(repo_id, "provider_market.parquet", repo_type="dataset", token=token or None)
-    )
-    if _sha256(source) != expected_hash:
-        raise RuntimeError("Previous full-market fallback failed SHA-256 validation")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    destination = cache_dir / "akshare_previous_snapshot.parquet"
-    shutil.copyfile(source, destination)
-    print(f"Previous full-market fallback copied to {destination}")
+    destination = None
+    expected_hash = manifest.get("builder_files", {}).get("provider_market.parquet")
+    if expected_hash:
+        source = Path(
+            hf_hub_download(repo_id, "provider_market.parquet", repo_type="dataset", token=token or None)
+        )
+        if _sha256(source) != expected_hash:
+            raise RuntimeError("Previous full-market fallback failed SHA-256 validation")
+        destination = cache_dir / "akshare_previous_snapshot.parquet"
+        shutil.copyfile(source, destination)
+        print(f"Previous full-market fallback copied to {destination}")
+    else:
+        print("Previous snapshot has no full-market fallback; continuing without market bootstrap.")
+
+    try:
+        universe_source = Path(
+            hf_hub_download(repo_id, "listed_universe.parquet", repo_type="dataset", token=token or None)
+        )
+        universe_hash = manifest.get("builder_files", {}).get("listed_universe.parquet")
+        if universe_hash and _sha256(universe_source) != universe_hash:
+            raise RuntimeError("Previous listed-universe fallback failed SHA-256 validation")
+        universe = pd.read_parquet(universe_source)
+        required = {"code", "name", "board"}
+        if not required.issubset(universe.columns) or universe["code"].nunique() < 1000:
+            raise RuntimeError("Previous listed-universe fallback is incomplete")
+        universe_destination = cache_dir / "akshare_universe.parquet"
+        shutil.copyfile(universe_source, universe_destination)
+        print(f"Previous listed universe copied to {universe_destination}")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        print(f"Previous listed-universe bootstrap unavailable: {type(exc).__name__}")
     return destination
 
 

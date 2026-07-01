@@ -639,9 +639,12 @@ def _assert_full_market_universe(universe: pd.DataFrame, request: DataRequest, c
 
 def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
     cache_path = cache_dir / "akshare_universe.parquet"
-    if cache_path.exists() and not force_refresh:
-        cached = pd.read_parquet(cache_path)
-        if _universe_is_usable(cached):
+    cached = None
+    if cache_path.exists():
+        candidate = pd.read_parquet(cache_path)
+        if _universe_is_usable(candidate):
+            cached = candidate
+        if cached is not None and not force_refresh:
             return cached
 
     rows = []
@@ -703,6 +706,8 @@ def _akshare_universe(ak, cache_dir: Path, force_refresh: bool) -> pd.DataFrame:
         universe["rank"] = universe["code"].map(core_rank)
         universe["rank"] = universe["rank"].fillna(len(core_rank) + universe.index.to_series())
         universe = universe.sort_values("rank").drop(columns=["rank"]).reset_index(drop=True)
+        if not _universe_is_usable(universe) and cached is not None:
+            universe = pd.concat([universe, cached], ignore_index=True).drop_duplicates("code", keep="first")
         if _universe_is_usable(universe):
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             universe.to_parquet(cache_path, index=False)

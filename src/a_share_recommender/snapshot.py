@@ -26,7 +26,7 @@ APP_SNAPSHOT_FILES = (
     "equity_curve.parquet",
     "market_history.parquet",
 )
-BUILDER_SNAPSHOT_FILES = ("provider_market.parquet",)
+BUILDER_SNAPSHOT_FILES = ("provider_market.parquet", "listed_universe.parquet")
 SNAPSHOT_FILES = APP_SNAPSHOT_FILES
 
 
@@ -39,6 +39,7 @@ def write_snapshot(
     destination: Path | str,
     config: StrategyConfig,
     expected_symbols: int | None = None,
+    listed_universe: pd.DataFrame | None = None,
 ) -> Path:
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +62,10 @@ def write_snapshot(
         result.equity_curve.to_parquet(temp_dir / "equity_curve.parquet", index=False)
         result.market[["date", "code", "close"]].to_parquet(temp_dir / "market_history.parquet", index=False)
         result.market.to_parquet(temp_dir / "provider_market.parquet", index=False)
+        if listed_universe is None:
+            universe_columns = [column for column in ["code", "name", "industry", "board"] if column in result.latest_scored]
+            listed_universe = result.latest_scored[universe_columns].drop_duplicates("code")
+        listed_universe.to_parquet(temp_dir / "listed_universe.parquet", index=False)
 
         payload = {
             "provider_status": asdict(result.provider_status),
