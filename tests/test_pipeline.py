@@ -10,6 +10,7 @@ from a_share_recommender.data_providers import (
     _cache_satisfies_request,
     _compact_market_types,
     _load_latest_provider_cache,
+    _load_one_akshare_symbol,
     _merge_missing_symbol_history,
     _merge_refreshed_with_baseline,
     _normalize_akshare_tx_hist,
@@ -326,6 +327,32 @@ def test_market_numeric_columns_are_compacted():
 
     assert str(compact["close"].dtype) == "float32"
     assert str(compact["list_days"].dtype) == "int32"
+
+
+def test_cloud_retry_can_reuse_symbol_cache(monkeypatch, tmp_path):
+    cached = make_sample_market(n_stocks=1, n_days=40)
+    symbol = cached["code"].iloc[0].split(".")[0]
+    cache_path = tmp_path / "symbols" / "akshare" / f"{symbol}_20250101_20260701.parquet"
+    cache_path.parent.mkdir(parents=True)
+    cached.to_parquet(cache_path, index=False)
+
+    class OfflineAkshare:
+        def stock_zh_a_hist(self, **kwargs):
+            raise AssertionError("online endpoint should not be called")
+
+    monkeypatch.setenv("REUSE_SYMBOL_CACHE", "1")
+    loaded = _load_one_akshare_symbol(
+        OfflineAkshare(),
+        tmp_path,
+        cached.groupby("code").tail(1),
+        symbol,
+        "20250101",
+        "20260701",
+        force_refresh=True,
+    )
+
+    assert loaded is not None
+    assert len(loaded) == len(cached)
 
 
 def test_full_market_rejects_core_only_universe():

@@ -303,7 +303,8 @@ def _load_one_akshare_symbol(
 ) -> pd.DataFrame | None:
     meta = full_universe.loc[full_universe["code"] == symbol].head(1)
     symbol_cache = _symbol_cache_path(cache_dir, "akshare", symbol, start_date, end_date)
-    cached = _load_symbol_cache(symbol_cache, force_refresh)
+    reuse_symbol_cache = os.getenv("REUSE_SYMBOL_CACHE", "").strip().lower() in {"1", "true", "yes", "on"}
+    cached = _load_symbol_cache(symbol_cache, force_refresh and not reuse_symbol_cache)
     if cached is not None:
         return cached
 
